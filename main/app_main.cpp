@@ -1,3 +1,20 @@
+// TO UPLOAD TO ESP32 RUN BELOW COMMANDS IN IDF POWERSHELL:
+
+// 1. idf.py build
+// 2. idf.py -p COM4 flash monitor
+
+
+// TO SAVE TO GITHUB RUN COMMANDS IN TERMINAL:
+// git add .
+// git commit -m "working version"
+// git push
+
+// TO REVERT TO OTHER VERSION:
+// git log --oneline
+// git checkout (COMMIT ID)
+
+
+
 #include "who_camera.h"
 #include "who_human_face_detection.hpp"
 #include "driver/gpio.h"

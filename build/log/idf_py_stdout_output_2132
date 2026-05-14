@@ -1,0 +1,191 @@
+Command: C:\Espressif\tools\python\v5.5.4\venv\Scripts\python.exe C:\esp\v5.5.4\esp-idf\tools/idf_monitor.py -p COM4 -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 --revision 0 C:\Users\julie\OneDrive\Desktop\backseat-minder\build\backseat-minder.elf C:\Users\julie\OneDrive\Desktop\backseat-minder\build\bootloader\bootloader.elf --force-color -m 'C:\Espressif\tools\python\v5.5.4\venv\Scripts\python.exe' 'C:\esp\v5.5.4\esp-idf\tools\idf.py' '-p' 'COM4'
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x2b (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x2074
+load:0x403c8700,len:0x114c
+load:0x403cb700,len:0x350c
+entry 0x403c89c0
+[0;32mI (27) boot: ESP-IDF v5.5.4 2nd stage bootloader[0m
+[0;32mI (27) boot: compile time May 14 2026 14:56:50[0m
+[0;32mI (27) boot: Multicore bootloader[0m
+D (27) bootloader_flash: XMC chip detected by RDID (00204017), skip.
+D (33) bootloader_flash: mmu set block paddr=0x00000000 (was 0xffffffff)
+D (40) bootloader_flash: mmu set block paddr=0x00000000 (was 0xffffffff)
+D (46) bootloader_flash: mmu set block paddr=0x00000000 (was 0xffffffff)
+D (52) bootloader_flash: mmu set block paddr=0x00000000 (was 0xffffffff)
+D (59) bootloader_flash: mmu set block paddr=0x00000000 (was 0xffffffff)
+D (65) bootloader_flash: mmu set block paddr=0x00000000 (was 0xffffffff)
+[0;32mI (72) boot: chip revision: v0.2[0m
+[0;32mI (75) boot: efuse block revision: v1.3[0m
+D (78) qio_mode: Probing for QIO mode enable...
+D (82) qio_mode: Raw SPI flash chip id 0x204017
+D (87) qio_mode: Manufacturer ID 0x20 chip ID 0x4017
+[0;32mI (91) qio_mode: Enabling default flash chip QIO[0m
+D (96) qio_mode: Initial flash chip status 0x2
+D (100) qio_mode: QIO mode already enabled in flash
+D (104) qio_mode: Enabling QIO mode...
+D (108) boot.esp32s3: magic e9
+D (111) boot.esp32s3: segments 03
+D (114) boot.esp32s3: spi_mode 02
+D (117) boot.esp32s3: spi_speed 0f
+D (120) boot.esp32s3: spi_size 03
+[0;32mI (123) boot.esp32s3: Boot SPI Speed : 80MHz[0m
+[0;32mI (127) boot.esp32s3: SPI Mode       : QIO[0m
+[0;32mI (131) boot.esp32s3: SPI Flash Size : 8MB[0m
+D (135) boot: Enabling RTCWDT(9000 ms)
+[0;32mI (138) boot: Enabling RNG early entropy source...[0m
+D (143) bootloader_flash: rodata starts from paddr=0x00008000, size=0xc00, will be mapped to vaddr=0x3c000000
+D (152) boot: mapped partition table 0x8000 at 0x3c008000
+D (157) flash_parts: partition table verified, 4 entries
+[0;32mI (162) boot: Partition Table:[0m
+[0;32mI (165) boot: ## Label            Usage          Type ST Offset   Length[0m
+D (172) boot: load partition table entry 0x3c008000
+D (176) boot: type=1 subtype=2
+[0;32mI (179) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+D (186) boot: load partition table entry 0x3c008020
+D (190) boot: type=1 subtype=1
+[0;32mI (193) boot:  1 phy_init         RF data          01 01 0000f000 00001000[0m
+D (200) boot: load partition table entry 0x3c008040
+D (204) boot: type=0 subtype=0
+[0;32mI (207) boot:  2 factory          factory app      00 00 00010000 00177000[0m
+[0;32mI (214) boot: End of partition table[0m
+D (217) boot: Trying partition index -1 offs 0x10000 size 0x177000
+D (223) esp_image: reading image header @ 0x10000
+D (227) bootloader_flash: mmu set block paddr=0x00010000 (was 0xffffffff)
+D (234) bootloader_flash: mmu set block paddr=0x00010000 (was 0xffffffff)
+D (240) bootloader_flash: mmu set block paddr=0x00010000 (was 0xffffffff)
+D (247) bootloader_flash: mmu set block paddr=0x00010000 (was 0xffffffff)
+D (253) bootloader_flash: mmu set block paddr=0x00010000 (was 0xffffffff)
+D (260) bootloader_flash: mmu set block paddr=0x00010000 (was 0xffffffff)
+D (266) esp_image: image header: 0xe9 0x06 0x02 0x03 403754ac
+D (272) bootloader_flash: mmu set block paddr=0x00010000 (was 0xffffffff)
+D (278) bootloader_flash: mmu set block paddr=0x00010000 (was 0xffffffff)
+[0;32mI (285) esp_image: segment 0: paddr=00010020 vaddr=3c080020 size=558c0h (350400) map[0m
+D (292) esp_image: free data page_count 0x00000200
+D (297) bootloader_flash: rodata starts from paddr=0x00010020, size=0x558c0, will be mapped to vaddr=0x3c000000
+D (359) bootloader_flash: mmu set block paddr=0x00060000 (was 0xffffffff)
+D (359) bootloader_flash: mmu set block paddr=0x00060000 (was 0xffffffff)
+[0;32mI (360) esp_image: segment 1: paddr=000658e8 vaddr=3fc94700 size=05bb0h ( 23472) load[0m
+D (368) esp_image: free data page_count 0x00000200
+D (372) bootloader_flash: rodata starts from paddr=0x000658e8, size=0x5bb0, will be mapped to vaddr=0x3c000000
+D (386) bootloader_flash: mmu set block paddr=0x00060000 (was 0xffffffff)
+D (389) bootloader_flash: mmu set block paddr=0x00060000 (was 0xffffffff)
+[0;32mI (395) esp_image: segment 2: paddr=0006b4a0 vaddr=40374000 size=04b78h ( 19320) load[0m
+D (403) esp_image: free data page_count 0x00000200
+D (407) bootloader_flash: rodata starts from paddr=0x0006b4a0, size=0x4b78, will be mapped to vaddr=0x3c000000
+D (421) bootloader_flash: mmu set block paddr=0x00070000 (was 0xffffffff)
+D (423) bootloader_flash: mmu set block paddr=0x00070000 (was 0xffffffff)
+[0;32mI (430) esp_image: segment 3: paddr=00070020 vaddr=42000020 size=7e89ch (518300) map[0m
+D (437) esp_image: free data page_count 0x00000200
+D (442) bootloader_flash: rodata starts from paddr=0x00070020, size=0x7e89c, will be mapped to vaddr=0x3c000000
+D (529) bootloader_flash: mmu set block paddr=0x000e0000 (was 0xffffffff)
+D (529) bootloader_flash: mmu set block paddr=0x000e0000 (was 0xffffffff)
+[0;32mI (530) esp_image: segment 4: paddr=000ee8c4 vaddr=40378b78 size=0baf0h ( 47856) load[0m
+D (538) esp_image: free data page_count 0x00000200
+D (543) bootloader_flash: rodata starts from paddr=0x000ee8c4, size=0xbaf0, will be mapped to vaddr=0x3c000000
+D (561) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (562) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+[0;32mI (565) esp_image: segment 5: paddr=000fa3bc vaddr=50000000 size=00020h (    32) load[0m
+D (573) esp_image: free data page_count 0x00000200
+D (577) bootloader_flash: rodata starts from paddr=0x000fa3bc, size=0x20, will be mapped to vaddr=0x3c000000
+D (587) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (593) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (600) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (606) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (613) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (619) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (626) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (632) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (639) bootloader_flash: mmu set block paddr=0x000f0000 (was 0xffffffff)
+D (645) boot: Calculated hash: aef495e12a2aa1ceb526fab94a4da9243dd5c923abc84025a2afc6d86116a96e
+[0;32mI (661) boot: Loaded app from partition at offset 0x10000[0m
+[0;32mI (661) boot: Disabling RNG early entropy source...[0m
+D (664) boot: Mapping segment 0 as DROM
+D (667) boot: Mapping segment 3 as IROM
+D (671) boot: calling set_cache_and_start_app
+D (675) boot: configure drom and irom and start
+D (679) boot: start: 0x403754ac
+[0;32mI (694) octal_psram: vendor id    : 0x0d (AP)[0m
+[0;32mI (694) octal_psram: dev id       : 0x02 (generation 3)[0m
+[0;32mI (694) octal_psram: density      : 0x03 (64 Mbit)[0m
+[0;32mI (696) octal_psram: good-die     : 0x01 (Pass)[0m
+[0;32mI (700) octal_psram: Latency      : 0x01 (Fixed)[0m
+[0;32mI (705) octal_psram: VCC          : 0x01 (3V)[0m
+[0;32mI (709) octal_psram: SRF          : 0x01 (Fast Refresh)[0m
+[0;32mI (714) octal_psram: BurstType    : 0x01 (Hybrid Wrap)[0m
+[0;32mI (718) octal_psram: BurstLen     : 0x01 (32 Byte)[0m
+[0;32mI (723) octal_psram: Readlatency  : 0x02 (10 cycles@Fixed)[0m
+[0;32mI (728) octal_psram: DriveStrength: 0x00 (1/1)[0m
+[0;32mI (732) MSPI Timing: Enter psram timing tuning[0m
+[0;32mI (737) esp_psram: Found 8MB PSRAM device[0m
+[0;32mI (740) esp_psram: Speed: 80MHz[0m
+[0;32mI (743) cpu_start: Multicore app[0m
+[0;32mI (1048) esp_psram: SPI SRAM memory test OK[0m
+[0;32mI (1057) cpu_start: GPIO 44 and 43 are used as console UART I/O pins[0m
+[0;32mI (1057) cpu_start: Pro cpu start user code[0m
+[0;32mI (1057) cpu_start: cpu freq: 240000000 Hz[0m
+[0;32mI (1059) app_init: Application information:[0m
+[0;32mI (1063) app_init: Project name:     backseat-minder[0m
+[0;32mI (1068) app_init: App version:      04c258d-dirty[0m
+[0;32mI (1072) app_init: Compile time:     May 14 2026 14:56:31[0m
+[0;32mI (1078) app_init: ELF file SHA256:  1efc0a53f...[0m
+[0;32mI (1082) app_init: ESP-IDF:          v5.5.4[0m
+[0;32mI (1086) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (1090) efuse_init: Max chip rev:     v0.99 [0m
+[0;32mI (1094) efuse_init: Chip rev:         v0.2[0m
+[0;32mI (1098) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (1104) heap_init: At 3FC9DBB0 len 0004BB60 (302 KiB): RAM[0m
+[0;32mI (1109) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM[0m
+[0;32mI (1115) heap_init: At 600FE000 len 00001FE8 (7 KiB): RTCRAM[0m
+[0;32mI (1120) esp_psram: Adding pool of 8192K of PSRAM memory to heap allocator[0m
+[0;32mI (1127) spi_flash: detected chip: generic[0m
+[0;32mI (1130) spi_flash: flash io: qio[0m
+[0;32mI (1138) sleep_gpio: Configure to isolate all GPIO pins in sleep state[0m
+[0;32mI (1140) sleep_gpio: Enable automatic switching of GPIO sleep configuration[0m
+[0;32mI (1147) main_task: Started on CPU0[0m
+[0;32mI (1157) esp_psram: Reserving pool of 32K of internal memory for DMA/internal allocations[0m
+[0;32mI (1157) main_task: Calling app_main()[0m
+[0;32mI (1157) who_camera: Camera module is CUSTOM[0m
+[0;32mI (1167) s3 ll_cam: DMA Channel=0[0m
+[0;32mI (1167) cam_hal: cam init ok[0m
+[0;32mI (1167) sccb-ng: pin_sda 4 pin_scl 5[0m
+[0;32mI (1177) sccb-ng: sccb_i2c_port=1[0m
+[0;32mI (1187) camera: Camera PID=0x3660 VER=0x00 MIDL=0x00 MIDH=0x00[0m
+[0;32mI (1187) camera: Detected OV3660 camera[0m
+[0;32mI (1187) camera: Detected camera at address=0x3c[0m
+[0;32mI (1487) cam_hal: PSRAM DMA mode disabled[0m
+[0;32mI (1487) s3 ll_cam: node_size: 3840, nodes_per_line: 1, lines_per_node: 6[0m
+[0;32mI (1487) s3 ll_cam: dma_half_buffer_min:  3840, dma_half_buffer: 15360, lines_per_half_buffer: 24, dma_buffer_size: 30720[0m
+[0;32mI (1487) cam_hal: buffer_size: 30720, half_buffer_size: 15360, node_buffer_size: 3840, node_cnt: 8, total_cnt: 10[0m
+[0;32mI (1497) cam_hal: Allocating 153600 Byte frame buffer in PSRAM[0m
+[0;32mI (1507) cam_hal: cam config ok[0m
+[0;32mI (1527) ov3660: Calculated VCO: 80000000 Hz, PLLCLK: 40000000 Hz, SYSCLK: 10000000 Hz, PCLK: 5000000 Hz[0m
+[0;32mI (11747) detection_result: [ 0]: (119,  75, 231, 217)[0m
+[0;32mI (11747) detection_result:       left eye: (152, 125), right eye: (201, 124), nose: (180, 149), mouth left: (159, 175), mouth right: (199, 173)[0m
+[0;32mI (12107) detection_result: [ 0]: (109,  75, 224, 223)[0m
+[0;32mI (12107) detection_result:       left eye: (141, 129), right eye: (193, 127), nose: (169, 154), mouth left: (147, 179), mouth right: (190, 179)[0m
+[0;32mI (12467) detection_result: [ 0]: (103,  72, 221, 230)[0m
+[0;32mI (12467) detection_result:       left eye: (137, 129), right eye: (189, 130), nose: (165, 157), mouth left: (144, 183), mouth right: (185, 184)[0m
+[0;32mI (12827) detection_result: [ 0]: (112,  68, 231, 224)[0m
+[0;32mI (12827) detection_result:       left eye: (145, 121), right eye: (199, 123), nose: (172, 152), mouth left: (150, 178), mouth right: (191, 180)[0m
+[0;32mI (13187) detection_result: [ 0]: (116,  66, 237, 219)[0m
+[0;32mI (13187) detection_result:       left eye: (157, 120), right eye: (205, 121), nose: (184, 147), mouth left: (157, 169), mouth right: (201, 170)[0m
+[0;32mI (13547) detection_result: [ 0]: (115,  65, 240, 223)[0m
+[0;32mI (13547) detection_result:       left eye: (162, 121), right eye: (208, 123), nose: (192, 149), mouth left: (162, 171), mouth right: (204, 172)[0m
+[0;32mI (13907) detection_result: [ 0]: (117,  65, 238, 220)[0m
+[0;32mI (13907) detection_result:       left eye: (162, 121), right eye: (208, 124), nose: (191, 148), mouth left: (161, 169), mouth right: (203, 171)[0m
+[0;32mI (14267) detection_result: [ 0]: (119,  66, 241, 223)[0m
+[0;32mI (14267) detection_result:       left eye: (163, 123), right eye: (211, 126), nose: (193, 150), mouth left: (162, 171), mouth right: (206, 173)[0m
+[0;32mI (14627) detection_result: [ 0]: (118,  63, 245, 228)[0m
+[0;32mI (14627) detection_result:       left eye: (163, 124), right eye: (209, 125), nose: (193, 151), mouth left: (162, 172), mouth right: (206, 173)[0m
+[0;32mI (14987) detection_result: [ 0]: (119,  76, 239, 228)[0m
+[0;32mI (14987) detection_result:       left eye: (161, 128), right eye: (206, 130), nose: (190, 156), mouth left: (162, 177), mouth right: (203, 176)[0m
+[0;32mI (19307) detection_result: [ 0]: (104,  75, 215, 221)[0m
+[0;32mI (19307) detection_result:       left eye: (134, 127), right eye: (187, 127), nose: (162, 154), mouth left: (142, 181), mouth right: (181, 182)[0m
+[0;32mI (19667) detection_result: [ 0]: (103,  70, 213, 217)[0m
+[0;32mI (19667) detection_result:       left eye: (134, 123), right eye: (186, 122), nose: (164, 151), mouth left: (143, 178), mouth right: (182, 177)[0m
+[0;32mI (20027) detection_result: [ 0]: (112,  69, 224, 215)[0m
+[0;32mI (20037) detection_result:       left eye: (144, 119), right eye: (196, 119), nose: (172, 147), mouth left: (151, 173), mouth right: (192, 173)[0m

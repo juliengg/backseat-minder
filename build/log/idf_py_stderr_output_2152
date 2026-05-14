@@ -1,0 +1,63 @@
+Command: ninja all
+CMake Warning at C:/esp/v5.5.4/esp-idf/components/partition_table/project_include.cmake:37 (message):
+  Partition table CSV file
+  C:/Users/julie/OneDrive/Desktop/backseat-minder/partitions.csv not found.
+  Change custom partition CSV path in menuconfig.
+Call Stack (most recent call first):
+  C:/esp/v5.5.4/esp-idf/tools/cmake/build.cmake:469 (include)
+  C:/esp/v5.5.4/esp-idf/tools/cmake/build.cmake:720 (__build_process_project_includes)
+  C:/esp/v5.5.4/esp-idf/tools/cmake/project.cmake:752 (idf_build_process)
+  CMakeLists.txt:10 (project)
+
+
+Traceback (most recent call last):
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 411, in <module>
+    main()
+    ~~~~^^
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 380, in main
+    target = ParttoolTarget(**target_args)
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 95, in __init__
+    with open(partition_table_file, 'rb') as f:
+         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:/Users/julie/OneDrive/Desktop/backseat-minder/partitions.csv'
+Traceback (most recent call last):
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 411, in <module>
+    main()
+    ~~~~^^
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 380, in main
+    target = ParttoolTarget(**target_args)
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 95, in __init__
+    with open(partition_table_file, 'rb') as f:
+         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:/Users/julie/OneDrive/Desktop/backseat-minder/partitions.csv'
+Traceback (most recent call last):
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 411, in <module>
+    main()
+    ~~~~^^
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 380, in main
+    target = ParttoolTarget(**target_args)
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 95, in __init__
+    with open(partition_table_file, 'rb') as f:
+         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:/Users/julie/OneDrive/Desktop/backseat-minder/partitions.csv'
+Traceback (most recent call last):
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 411, in <module>
+    main()
+    ~~~~^^
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 380, in main
+    target = ParttoolTarget(**target_args)
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 95, in __init__
+    with open(partition_table_file, 'rb') as f:
+         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:/Users/julie/OneDrive/Desktop/backseat-minder/partitions.csv'
+Traceback (most recent call last):
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 411, in <module>
+    main()
+    ~~~~^^
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 380, in main
+    target = ParttoolTarget(**target_args)
+  File "C:\esp\v5.5.4\esp-idf\components\partition_table\parttool.py", line 95, in __init__
+    with open(partition_table_file, 'rb') as f:
+         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:/Users/julie/OneDrive/Desktop/backseat-minder/partitions.csv'
+ninja: error: 'C:/Users/julie/OneDrive/Desktop/backseat-minder/partitions.csv', needed by 'partition_table/partition-table.bin', missing and no known rule to make it
