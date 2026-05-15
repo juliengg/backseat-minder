@@ -9,6 +9,10 @@
 #include "nvs_flash.h"
 #include "lwip/ip4_addr.h"
 #include "esp_log.h"
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
+#include "lwip/err.h"
+#include "lwip/sys.h"
 #include <string.h>
 
 #define BUTTON_GPIO     GPIO_NUM_0
@@ -17,15 +21,14 @@
 #define WIFI_PASS       ""
 #define SETUP_IP        "192.168.4.1"
 
-// Forward declarations
-static void start_ap(void);
-static httpd_handle_t start_webserver(void);
-
 static const char *TAG = "setup_mode";
+
+// ─── State ─────────────────────────────────────────────────────────────
 static volatile bool setup_confirmed = false;
 static httpd_handle_t server = NULL;
+static TaskHandle_t dns_task_handle = NULL;
 
-// ─── HTML ────────────────────────────────────────────────────────────────────
+// ─── HTML ──────────────────────────────────────────────────────────────
 
 static const char *PORTAL_HTML =
     "<!DOCTYPE html><html><head>"
@@ -67,20 +70,70 @@ static const char *CONFIRM_HTML =
     "<p>Backseat Minder is now active.<br>You can close this page.</p>"
     "</body></html>";
 
-// ─── HTTP Handlers ───────────────────────────────────────────────────────────
+// ─── DNS HIJACK TASK ────────────────────────────────────────────────
+
+static void dns_server_task(void *pvParameters)
+{
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+    struct sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(53);
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    bind(sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
+
+    uint8_t buffer[512];
+
+    while (true)
+    {
+        struct sockaddr_in client_addr{};
+        socklen_t len = sizeof(client_addr);
+
+        int recv_len = recvfrom(sock, buffer, sizeof(buffer), 0,
+                                (struct sockaddr *)&client_addr, &len);
+
+        if (recv_len < 12) continue;
+
+        // convert request → response
+        buffer[2] |= 0x80;
+        buffer[7] = buffer[5];
+
+        int idx = recv_len;
+
+        buffer[idx++] = 0xC0;
+        buffer[idx++] = 0x0C;
+
+        buffer[idx++] = 0x00;
+        buffer[idx++] = 0x01;
+
+        buffer[idx++] = 0x00;
+        buffer[idx++] = 0x01;
+
+        buffer[idx++] = 0x00;
+        buffer[idx++] = 0x00;
+        buffer[idx++] = 0x00;
+        buffer[idx++] = 0x3C;
+
+        buffer[idx++] = 0x00;
+        buffer[idx++] = 0x04;
+
+        buffer[idx++] = 192;
+        buffer[idx++] = 168;
+        buffer[idx++] = 4;
+        buffer[idx++] = 1;
+
+        sendto(sock, buffer, idx, 0,
+               (struct sockaddr *)&client_addr, len);
+    }
+}
+
+// ─── HTTP HANDLERS ────────────────────────────────────────────────
 
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
-}
-
-static esp_err_t redirect_handler(httpd_req_t *req)
-{
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "http://" SETUP_IP "/");
-    httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -92,26 +145,45 @@ static esp_err_t confirm_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// ─── Server & AP ─────────────────────────────────────────────────────────────
+static esp_err_t redirect_handler(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+// ─── HTTP SERVER ────────────────────────────────────────────────
 
 static httpd_handle_t start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.uri_match_fn   = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 8;
+    config.uri_match_fn = httpd_uri_match_wildcard;
 
     httpd_handle_t hdl = NULL;
     if (httpd_start(&hdl, &config) != ESP_OK) return NULL;
 
-    httpd_uri_t root    = { "/",        HTTP_GET,  root_get_handler,     NULL };
+    httpd_uri_t root = { "/", HTTP_GET, root_get_handler, NULL };
     httpd_uri_t confirm = { "/confirm", HTTP_POST, confirm_post_handler, NULL };
-    httpd_uri_t wild    = { "/*",       HTTP_GET,  redirect_handler,     NULL };
+
+    // captive portal detection endpoints
+    httpd_uri_t android = { "/generate_204", HTTP_GET, redirect_handler, NULL };
+    httpd_uri_t apple   = { "/hotspot-detect.html", HTTP_GET, redirect_handler, NULL };
+    httpd_uri_t windows = { "/connecttest.txt", HTTP_GET, redirect_handler, NULL };
+    httpd_uri_t ncsi    = { "/ncsi.txt", HTTP_GET, redirect_handler, NULL };
 
     httpd_register_uri_handler(hdl, &root);
     httpd_register_uri_handler(hdl, &confirm);
-    httpd_register_uri_handler(hdl, &wild);
+
+    httpd_register_uri_handler(hdl, &android);
+    httpd_register_uri_handler(hdl, &apple);
+    httpd_register_uri_handler(hdl, &windows);
+    httpd_register_uri_handler(hdl, &ncsi);
+
     return hdl;
 }
+
+// ─── AP START ────────────────────────────────────────────────
 
 static void start_ap(void)
 {
@@ -121,9 +193,10 @@ static void start_ap(void)
     esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
 
     esp_netif_ip_info_t ip_info;
-    ip_info.ip.addr      = ipaddr_addr(SETUP_IP);
-    ip_info.gw.addr      = ipaddr_addr(SETUP_IP);
+    ip_info.ip.addr = ipaddr_addr(SETUP_IP);
+    ip_info.gw.addr = ipaddr_addr(SETUP_IP);
     ip_info.netmask.addr = ipaddr_addr("255.255.255.0");
+
     esp_netif_dhcps_stop(ap_netif);
     esp_netif_set_ip_info(ap_netif, &ip_info);
     esp_netif_dhcps_start(ap_netif);
@@ -133,20 +206,23 @@ static void start_ap(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
 
     wifi_config_t wifi_config = {};
-    strncpy((char *)wifi_config.ap.ssid,     WIFI_SSID, sizeof(wifi_config.ap.ssid));
+    strncpy((char *)wifi_config.ap.ssid, WIFI_SSID, sizeof(wifi_config.ap.ssid));
     strncpy((char *)wifi_config.ap.password, WIFI_PASS, sizeof(wifi_config.ap.password));
-    wifi_config.ap.ssid_len       = strlen(WIFI_SSID);
+
+    wifi_config.ap.ssid_len = strlen(WIFI_SSID);
     wifi_config.ap.max_connection = 4;
-    wifi_config.ap.authmode       = strlen(WIFI_PASS) == 0
-                                        ? WIFI_AUTH_OPEN
-                                        : WIFI_AUTH_WPA2_PSK;
+    wifi_config.ap.authmode = WIFI_AUTH_OPEN;
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "AP started: SSID=%s IP=%s", WIFI_SSID, SETUP_IP);
+
+    // start DNS hijack
+    xTaskCreate(dns_server_task, "dns_server", 4096, NULL, 5, &dns_task_handle);
+
+    ESP_LOGI(TAG, "AP + DNS started");
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
+// ─── PUBLIC API ────────────────────────────────────────────────
 
 void setup_mode_init()
 {
@@ -155,6 +231,7 @@ void setup_mode_init()
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
+
     gpio_reset_pin(BUTTON_GPIO);
     gpio_set_direction(BUTTON_GPIO, GPIO_MODE_INPUT);
     gpio_set_pull_mode(BUTTON_GPIO, GPIO_PULLUP_ONLY);
@@ -170,19 +247,32 @@ bool setup_mode_button_pressed()
 void enter_setup_mode()
 {
     ESP_LOGI(TAG, "Entering setup mode");
+
     setup_confirmed = false;
-    gpio_set_level(LED_GPIO, 0);
     start_ap();
     server = start_webserver();
 
-    while (!setup_confirmed) {
-        gpio_set_level(LED_GPIO, 1);
-        vTaskDelay(pdMS_TO_TICKS(200));
-        gpio_set_level(LED_GPIO, 0);
+    bool led_state = false;
+
+    while (!setup_confirmed)
+    {
+        led_state = !led_state;
+        gpio_set_level(LED_GPIO, led_state);
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 
-    if (server) { httpd_stop(server); server = NULL; }
+    if (dns_task_handle)
+    {
+        vTaskDelete(dns_task_handle);
+        dns_task_handle = NULL;
+    }
+
+    if (server)
+    {
+        httpd_stop(server);
+        server = NULL;
+    }
+
     esp_wifi_stop();
     esp_wifi_deinit();
     esp_event_loop_delete_default();
