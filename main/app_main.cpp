@@ -20,6 +20,7 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "setup_mode.h"        // <-- only new line needed
 
 #define LED_GPIO GPIO_NUM_2
 
@@ -27,6 +28,8 @@ static QueueHandle_t xQueueAIFrame = NULL;
 
 extern "C" void app_main()
 {
+    setup_mode_init();  // handles NVS, button GPIO
+
     gpio_reset_pin(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_GPIO, 0);
@@ -37,11 +40,10 @@ extern "C" void app_main()
 
     while (true)
     {
-        if (get_face_detected())
-            gpio_set_level(LED_GPIO, 1);
-        else
-            gpio_set_level(LED_GPIO, 0);
+        if (setup_mode_button_pressed())
+            enter_setup_mode();  // blocks until confirmed
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        gpio_set_level(LED_GPIO, get_face_detected() ? 1 : 0);
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
