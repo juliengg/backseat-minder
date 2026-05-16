@@ -20,15 +20,25 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "setup_mode.h"        // <-- only new line needed
+#include "setup_mode.h"
 
-#define LED_GPIO GPIO_NUM_2
+#define LED_GPIO        GPIO_NUM_2
+// The ESP32-S3 has a WS2812 RGB NeoPixel on GPIO 48.
+// We hold it LOW so floating/spurious signals don't light it up.
+#define NEOPIXEL_GPIO   GPIO_NUM_48
 
 static QueueHandle_t xQueueAIFrame = NULL;
 
 extern "C" void app_main()
 {
     setup_mode_init();  // handles NVS, button GPIO
+
+    // Suppress the onboard NeoPixel (GPIO 48) by driving it low.
+    // Without this the camera driver leaves the data line floating,
+    // which can latch a bright white colour into the LED.
+    gpio_reset_pin(NEOPIXEL_GPIO);
+    gpio_set_direction(NEOPIXEL_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(NEOPIXEL_GPIO, 0);
 
     gpio_reset_pin(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
