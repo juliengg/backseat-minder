@@ -17,10 +17,12 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "esp_system.h"
+#include "esp_system.h"
 
 #define BUTTON_GPIO     GPIO_NUM_0
 #define LED_GPIO        GPIO_NUM_2
-#define WIFI_SSID       "ESP32-Setup"
+#define WIFI_SSID       "Backseat Minder"
 #define WIFI_PASS       ""
 #define SETUP_IP        "192.168.4.1"
 
@@ -40,7 +42,6 @@ static volatile bool setup_confirmed = false;
 static httpd_handle_t server = NULL;
 static TaskHandle_t dns_task_handle = NULL;
 static esp_netif_t *s_ap_netif = NULL;
-static uint8_t s_setup_count = 0;
 static bool s_netif_inited = false;
 static bool s_eventloop_inited = false;
 
@@ -392,6 +393,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     build_portal_html(html, PORTAL_HTML_MAXLEN, &cfg);
 
     httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 
     free(html);
@@ -456,6 +458,7 @@ static esp_err_t redirect_handler(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
@@ -549,17 +552,11 @@ static void start_ap(void)
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
 
-    // Use a rolling SSID so the phone always sees a "new" network,
-    // forcing it to re-run captive portal detection on every entry.
-    char ssid_buf[32];
-    s_setup_count++;
-    snprintf(ssid_buf, sizeof(ssid_buf), "%s-%u", WIFI_SSID, s_setup_count);
-
     wifi_config_t wifi_config = {};
-    strncpy((char *)wifi_config.ap.ssid,     ssid_buf, sizeof(wifi_config.ap.ssid));
+    strncpy((char *)wifi_config.ap.ssid,     WIFI_SSID, sizeof(wifi_config.ap.ssid));
     strncpy((char *)wifi_config.ap.password, WIFI_PASS, sizeof(wifi_config.ap.password));
 
-    wifi_config.ap.ssid_len       = strlen(ssid_buf);
+    wifi_config.ap.ssid_len       = strlen(WIFI_SSID);
     wifi_config.ap.max_connection = 4;
     wifi_config.ap.authmode       = WIFI_AUTH_OPEN;
 
@@ -634,5 +631,7 @@ void enter_setup_mode()
     while (gpio_get_level(BUTTON_GPIO) == 0)
         vTaskDelay(pdMS_TO_TICKS(10));
 
-    ESP_LOGI(TAG, "Exiting setup mode");
+    ESP_LOGI(TAG, "Exiting setup mode — rebooting");
+    vTaskDelay(pdMS_TO_TICKS(500)); // flush logs before reboot
+    esp_restart();
 }
