@@ -50,11 +50,47 @@ idf.py -p COM4 flash monitor
 6. Every 100 ms, the application:
    - checks whether GPIO 0 is being held, and enters setup mode if so;
    - every three seconds, updates in-memory `temperature_f` and `humidity_percent`
-     values from an AM2302/DHT22 sensor on GPIO 4;
+     values from an AM2302/DHT22 sensor on GPIO 1;
    - reads `get_face_detected()` from the face-detection component;
    - sets GPIO 2 high when a face is detected and low otherwise.
 
 Face detection is therefore the only active occupancy-related behavior in the checked-in application code.
+
+### Optional USB development telemetry
+
+The device remains fully standalone. When its native **USB Serial/JTAG** USB-C port (left) is
+connected to a host, `usb_telemetry.cpp` sends a telemetry packet every three seconds
+after the temperature/humidity sample. Each packet includes uptime, face-detection
+status, sensor validity, temperature in Fahrenheit, and relative humidity. Camera-frame
+and telemetry packets are multiplexed over the same USB-OTG serial connection. No
+external host is needed for normal operation, and a disconnected or slow host does not
+block the main loop.
+
+Use `tools/usb_telemetry_viewer.py` on a development laptop to display serial output.
+It mirrors `idf.py monitor` output by default; use `--json-only` to display only the
+formatted telemetry records. It requires `pyserial` (`python -m pip install pyserial`)
+and a port name, for example:
+
+```text
+python tools/usb_telemetry_viewer.py --port COM7
+```
+
+On the Freenove ESP32-S3 WROOM board, use the connector labeled **USB-OTG**. It is
+wired directly to the ESP32-S3's USB D- (GPIO 19) and D+ (GPIO 20) lines. Do not use
+the **USB-UART** connector for this dedicated telemetry stream; that connector is
+instead attached to UART0 through the board's USB-to-UART chip. Windows should expose
+the USB-OTG connection as a COM port after the firmware is flashed.
+
+For a development camera preview, install Pillow in addition to `pyserial`, then run:
+
+```text
+python -m pip install pillow
+python tools/usb_telemetry_viewer.py --port COM5
+```
+
+The preview is JPEG-compressed and limited to one frame per second to avoid making USB
+debugging alter normal face-detection behavior. It uses the detected-frame output, so
+face boxes may be visible in the preview.
 
 ### Setup mode
 
@@ -91,10 +127,11 @@ These fields are currently **stored only**. No application logic consumes them a
 - ESP32-S3 device with a supported camera, likely aligned with ESP-WHO ESP32-S3-EYE support.
 - GPIO 0: active-low setup button, using the internal pull-up.
 - GPIO 2: external/status LED output used for face-detection status and setup-mode blinking.
-- GPIO 4: AM2302/DHT22 single-wire temperature and relative-humidity sensor data pin.
+- GPIO 1: AM2302/DHT22 single-wire temperature and relative-humidity sensor data pin.
 - GPIO 48: onboard WS2812/NeoPixel data pin, explicitly held low.
 
-The AM2302/DHT22 needs its data line pulled high (normally with an external 4.7–10 kOhm
+GPIO 4 cannot be used for the AM2302/DHT22 because the camera uses it as its SIOD control
+line. The AM2302/DHT22 needs its data line pulled high (normally with an external 4.7–10 kOhm
 resistor from data to the sensor supply). The firmware reads it every three seconds,
 converts temperature to Fahrenheit, and logs successful readings. The values are not yet
 used to change alert or face-detection behavior.

@@ -7,7 +7,8 @@
 
 namespace {
 
-constexpr gpio_num_t SENSOR_GPIO = GPIO_NUM_4;
+// GPIO 4 is used by the camera's SIOD control bus; GPIO 2 drives the status LED.
+constexpr gpio_num_t SENSOR_GPIO = GPIO_NUM_1;
 constexpr int RESPONSE_TIMEOUT_US = 120;
 constexpr int BIT_TIMEOUT_US = 100;
 constexpr int BIT_ONE_THRESHOLD_US = 50;
