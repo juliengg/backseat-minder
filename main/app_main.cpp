@@ -21,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "setup_mode.h"
+#include "temp_humidity_sensor.h"
 
 #define LED_GPIO        GPIO_NUM_2
 // The ESP32-S3 has a WS2812 RGB NeoPixel on GPIO 48.
@@ -44,14 +45,29 @@ extern "C" void app_main()
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_GPIO, 0);
 
+    temp_humidity_sensor_init();
+
     xQueueAIFrame = xQueueCreate(2, sizeof(camera_fb_t *));
     register_camera(PIXFORMAT_RGB565, FRAMESIZE_QVGA, 1, xQueueAIFrame);
     register_human_face_detection(xQueueAIFrame, NULL, NULL, NULL, true);
+
+    float temperature_f = 0.0f;
+    float humidity_percent = 0.0f;
+    TickType_t last_sensor_read = 0;
 
     while (true)
     {
         if (setup_mode_button_pressed())
             enter_setup_mode();  // blocks until confirmed
+
+        // AM2302/DHT22 measurements should be spaced by at least two seconds.
+        if (xTaskGetTickCount() - last_sensor_read >= pdMS_TO_TICKS(3000)) {
+            last_sensor_read = xTaskGetTickCount();
+            if (temp_humidity_sensor_read(&temperature_f, &humidity_percent)) {
+                ESP_LOGI("app_main", "Temperature: %.1f F, Humidity: %.1f %%",
+                         temperature_f, humidity_percent);
+            }
+        }
 
         gpio_set_level(LED_GPIO, get_face_detected() ? 1 : 0);
         vTaskDelay(pdMS_TO_TICKS(100));
