@@ -10,7 +10,8 @@ void usb_telemetry_init();
 // Sends one newline-delimited JSON sample to a connected USB host.
 // Values remain processed locally; this is development-only observability.
 void usb_telemetry_send(float temperature_f, float humidity_percent,
-                        bool temperature_humidity_valid, bool face_detected);
+                        bool temperature_humidity_valid, bool face_detected,
+                        bool mmwave_person_detected);
 
 // Sends one JPEG frame with a binary BSMF header. This is used only by the
 // development camera viewer connected to native USB.

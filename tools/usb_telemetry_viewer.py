@@ -89,6 +89,7 @@ def show_camera(device: serial.Serial) -> int:
                         text=(f"Temperature: {sample.get('temperature_f', 0):.1f} °F\n"
                               f"Humidity: {sample.get('humidity_percent', 0):.1f} %\n"
                               f"Face detected: {'yes' if sample.get('face_detected') else 'no'}\n"
+                              f"mmWave presence: {'yes' if sample.get('mmwave_person_detected') else 'no'}\n"
                               f"Sensor valid: {sample.get('temperature_humidity_valid')}")
                     )
                 except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):

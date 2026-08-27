@@ -75,21 +75,24 @@ bool usb_telemetry_host_connected()
 }
 
 void usb_telemetry_send(float temperature_f, float humidity_percent,
-                        bool temperature_humidity_valid, bool face_detected)
+                        bool temperature_humidity_valid, bool face_detected,
+                        bool mmwave_person_detected)
 {
     if (!usb_telemetry_host_connected() ||
         xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
         return;
     }
 
-    char message[192];
+    char message[224];
     const int length = snprintf(
         message, sizeof(message),
         "{\"uptime_ms\":%lld,\"face_detected\":%s,"
+        "\"mmwave_person_detected\":%s,"
         "\"temperature_humidity_valid\":%s,\"temperature_f\":%.1f,"
         "\"humidity_percent\":%.1f}\n",
         esp_timer_get_time() / 1000,
         face_detected ? "true" : "false",
+        mmwave_person_detected ? "true" : "false",
         temperature_humidity_valid ? "true" : "false",
         temperature_f, humidity_percent);
 

@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mmwave_sensor.h"
 #include "setup_mode.h"
 #include "temp_humidity_sensor.h"
 #include "usb_camera_stream.h"
@@ -50,6 +51,7 @@ extern "C" void app_main()
     gpio_set_level(LED_GPIO, 0);
 
     temp_humidity_sensor_init();
+    mmwave_sensor_init();
     usb_telemetry_init();
 
     xQueueAIFrame = xQueueCreate(2, sizeof(camera_fb_t *));
@@ -61,6 +63,7 @@ extern "C" void app_main()
     float temperature_f = 0.0f;
     float humidity_percent = 0.0f;
     bool temperature_humidity_valid = false;
+    bool face_detected_since_telemetry = false;
     TickType_t last_sensor_read = 0;
 
     while (true)
@@ -68,7 +71,11 @@ extern "C" void app_main()
         if (setup_mode_button_pressed())
             enter_setup_mode();  // blocks until confirmed
 
-        const bool face_detected = get_face_detected();
+        // ESP-WHO exposes face detection as a one-shot flag. Preserve any
+        // detection until the next telemetry sample instead of losing it
+        // between the main loop's 100 ms polls and telemetry's 3 second polls.
+        face_detected_since_telemetry |= get_face_detected();
+        const bool person_detected = mmwave_sensor_person_detected();
 
         // AM2302/DHT22 measurements should be spaced by at least two seconds.
         if (xTaskGetTickCount() - last_sensor_read >= pdMS_TO_TICKS(3000)) {
@@ -81,10 +88,13 @@ extern "C" void app_main()
             }
 
             usb_telemetry_send(temperature_f, humidity_percent,
-                               temperature_humidity_valid, face_detected);
+                               temperature_humidity_valid,
+                               face_detected_since_telemetry,
+                               person_detected);
+            face_detected_since_telemetry = false;
         }
 
-        gpio_set_level(LED_GPIO, face_detected ? 1 : 0);
+        gpio_set_level(LED_GPIO, person_detected ? 1 : 0);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
