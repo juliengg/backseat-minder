@@ -10,7 +10,7 @@
 
 namespace {
 
-constexpr int64_t FRAME_INTERVAL_US = 1000000; // One preview frame per second.
+constexpr int64_t FRAME_INTERVAL_US = 1000000 / 3; // Target three preview FPS.
 const char *TAG = "usb_camera";
 QueueHandle_t s_frame_queue = nullptr;
 

@@ -1,9 +1,10 @@
 idf_component_register(
-    SRCS "mmwave_sensor.cpp" "usb_camera_stream.cpp" "usb_telemetry.cpp" "app_main.cpp" "setup_mode.cpp" "temp_humidity_sensor.cpp"
+    SRCS "thermal_camera.cpp" "mlx90640/MLX90640_API.c" "mmwave_sensor.cpp" "usb_camera_stream.cpp" "usb_telemetry.cpp" "app_main.cpp" "setup_mode.cpp" "temp_humidity_sensor.cpp"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         modules
         esp_driver_gpio
+        esp_driver_i2c
         esp_driver_uart
         esp_driver_usb_serial_jtag
         esp_event
@@ -19,3 +20,5 @@ idf_component_register(
         nvs_flash
         espressif__esp32-camera
 )
+
+target_include_directories(${COMPONENT_LIB} PRIVATE "mlx90640")

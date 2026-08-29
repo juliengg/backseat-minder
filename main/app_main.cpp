@@ -24,6 +24,7 @@
 #include "mmwave_sensor.h"
 #include "setup_mode.h"
 #include "temp_humidity_sensor.h"
+#include "thermal_camera.h"
 #include "usb_camera_stream.h"
 #include "usb_telemetry.h"
 
@@ -34,6 +35,33 @@
 
 static QueueHandle_t xQueueAIFrame = NULL;
 static QueueHandle_t xQueueUSBFrame = NULL;
+
+namespace {
+
+constexpr TickType_t THERMAL_FRAME_INTERVAL = pdMS_TO_TICKS(250); // 4 FPS
+
+void thermal_stream_task(void *)
+{
+    TickType_t next_frame_time = xTaskGetTickCount();
+    while (true) {
+        size_t csv_length = 0;
+        const char *csv = thermal_camera_read_csv(&csv_length);
+        if (csv) {
+            usb_telemetry_send_thermal_frame(csv, csv_length);
+        }
+        xTaskDelayUntil(&next_frame_time, THERMAL_FRAME_INTERVAL);
+    }
+}
+
+void thermal_stream_start()
+{
+    if (xTaskCreatePinnedToCore(thermal_stream_task, "thermal_stream", 6144,
+                                nullptr, 3, nullptr, 0) != pdPASS) {
+        ESP_LOGW("app_main", "Could not start thermal USB stream task");
+    }
+}
+
+} // namespace
 
 extern "C" void app_main()
 {
@@ -52,6 +80,7 @@ extern "C" void app_main()
 
     temp_humidity_sensor_init();
     mmwave_sensor_init();
+    const bool thermal_camera_ready = thermal_camera_init();
     usb_telemetry_init();
 
     xQueueAIFrame = xQueueCreate(2, sizeof(camera_fb_t *));
@@ -59,6 +88,9 @@ extern "C" void app_main()
     register_camera(PIXFORMAT_RGB565, FRAMESIZE_QVGA, 1, xQueueAIFrame);
     register_human_face_detection(xQueueAIFrame, NULL, NULL, xQueueUSBFrame, false);
     usb_camera_stream_start(xQueueUSBFrame);
+    if (thermal_camera_ready) {
+        thermal_stream_start();
+    }
 
     float temperature_f = 0.0f;
     float humidity_percent = 0.0f;
@@ -91,6 +123,7 @@ extern "C" void app_main()
                                temperature_humidity_valid,
                                face_detected_since_telemetry,
                                person_detected);
+
             face_detected_since_telemetry = false;
         }
 

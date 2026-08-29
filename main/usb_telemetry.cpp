@@ -115,3 +115,17 @@ bool usb_telemetry_send_camera_frame(const uint8_t *jpeg, size_t jpeg_length)
     xSemaphoreGive(s_write_mutex);
     return sent;
 }
+
+bool usb_telemetry_send_thermal_frame(const char *csv, size_t csv_length)
+{
+    if (!csv || csv_length == 0 || !usb_telemetry_host_connected() ||
+        xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return false;
+    }
+
+    // Packet type BSMH: one UTF-8 CSV row containing 768 Celsius values.
+    const bool sent = send_packet("BSMH", reinterpret_cast<const uint8_t *>(csv),
+                                  csv_length);
+    xSemaphoreGive(s_write_mutex);
+    return sent;
+}

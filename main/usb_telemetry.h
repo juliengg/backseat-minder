@@ -17,5 +17,8 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
 // development camera viewer connected to native USB.
 bool usb_telemetry_send_camera_frame(const uint8_t *jpeg, size_t jpeg_length);
 
+// Sends a 32x24 MLX90640 CSV frame in a BSMH packet.
+bool usb_telemetry_send_thermal_frame(const char *csv, size_t csv_length);
+
 // Returns true only while a native USB host is connected.
 bool usb_telemetry_host_connected();
