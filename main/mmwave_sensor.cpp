@@ -18,7 +18,7 @@ constexpr size_t LINE_BUFFER_SIZE = 96;
 const char *TAG = "mmwave_sensor";
 char s_line_buffer[LINE_BUFFER_SIZE] = {};
 size_t s_line_length = 0;
-bool s_person_detected = false;
+bool s_mmwave_presence_detected = false;
 
 void process_packet()
 {
@@ -28,11 +28,12 @@ void process_packet()
     if (std::strncmp(s_line_buffer, PREFIX, sizeof(PREFIX) - 1) == 0) {
         const char value = s_line_buffer[sizeof(PREFIX) - 1];
         if (value == '0' || value == '1') {
-            const bool detected = value == '1';
-            if (detected != s_person_detected) {
-                ESP_LOGI(TAG, "Person %s", detected ? "detected" : "no longer detected");
+            const bool mmwave_presence_detected = value == '1';
+            if (mmwave_presence_detected != s_mmwave_presence_detected) {
+                ESP_LOGI(TAG, "mmWave presence %s",
+                         mmwave_presence_detected ? "detected" : "no longer detected");
             }
-            s_person_detected = detected;
+            s_mmwave_presence_detected = mmwave_presence_detected;
         }
     }
 
@@ -116,8 +117,8 @@ void mmwave_sensor_init()
     configure_sensor();
 }
 
-bool mmwave_sensor_person_detected()
+bool mmwave_sensor_presence_detected()
 {
     drain_uart();
-    return s_person_detected;
+    return s_mmwave_presence_detected;
 }

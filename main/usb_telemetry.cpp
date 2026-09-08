@@ -76,23 +76,28 @@ bool usb_telemetry_host_connected()
 
 void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool temperature_humidity_valid, bool face_detected,
-                        bool mmwave_person_detected)
+                        bool mmwave_presence_detected, bool thermal_heat_detected,
+                        bool human_presence_detected)
 {
     if (!usb_telemetry_host_connected() ||
         xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
         return;
     }
 
-    char message[224];
+    char message[384];
     const int length = snprintf(
         message, sizeof(message),
         "{\"uptime_ms\":%lld,\"face_detected\":%s,"
-        "\"mmwave_person_detected\":%s,"
+        "\"mmwave_presence_detected\":%s,"
+        "\"heat_trace_detected\":%s,"
+        "\"human_presence_detected\":%s,"
         "\"temperature_humidity_valid\":%s,\"temperature_f\":%.1f,"
         "\"humidity_percent\":%.1f}\n",
         esp_timer_get_time() / 1000,
         face_detected ? "true" : "false",
-        mmwave_person_detected ? "true" : "false",
+        mmwave_presence_detected ? "true" : "false",
+        thermal_heat_detected ? "true" : "false",
+        human_presence_detected ? "true" : "false",
         temperature_humidity_valid ? "true" : "false",
         temperature_f, humidity_percent);
 
@@ -126,6 +131,22 @@ bool usb_telemetry_send_thermal_frame(const char *csv, size_t csv_length)
     // Packet type BSMH: one UTF-8 CSV row containing 768 Celsius values.
     const bool sent = send_packet("BSMH", reinterpret_cast<const uint8_t *>(csv),
                                   csv_length);
+    xSemaphoreGive(s_write_mutex);
+    return sent;
+}
+
+bool usb_telemetry_send_heat_trace_bounds(bool detected, uint8_t x, uint8_t y,
+                                          uint8_t width, uint8_t height)
+{
+    if (!usb_telemetry_host_connected() ||
+        xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return false;
+    }
+
+    const uint8_t payload[] = {
+        static_cast<uint8_t>(detected), x, y, width, height,
+    };
+    const bool sent = send_packet("BSMD", payload, sizeof(payload));
     xSemaphoreGive(s_write_mutex);
     return sent;
 }

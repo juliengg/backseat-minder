@@ -16,7 +16,6 @@
 
 
 #include "who_camera.h"
-#include "who_human_face_detection.hpp"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -25,6 +24,7 @@
 #include "setup_mode.h"
 #include "temp_humidity_sensor.h"
 #include "thermal_camera.h"
+#include "tuned_face_detection.h"
 #include "usb_camera_stream.h"
 #include "usb_telemetry.h"
 
@@ -48,6 +48,13 @@ void thermal_stream_task(void *)
         const char *csv = thermal_camera_read_csv(&csv_length);
         if (csv) {
             usb_telemetry_send_thermal_frame(csv, csv_length);
+            uint8_t x = 0;
+            uint8_t y = 0;
+            uint8_t width = 0;
+            uint8_t height = 0;
+            const bool detected = thermal_camera_get_heat_trace_bounds(
+                &x, &y, &width, &height);
+            usb_telemetry_send_heat_trace_bounds(detected, x, y, width, height);
         }
         xTaskDelayUntil(&next_frame_time, THERMAL_FRAME_INTERVAL);
     }
@@ -86,7 +93,7 @@ extern "C" void app_main()
     xQueueAIFrame = xQueueCreate(2, sizeof(camera_fb_t *));
     xQueueUSBFrame = xQueueCreate(2, sizeof(camera_fb_t *));
     register_camera(PIXFORMAT_RGB565, FRAMESIZE_QVGA, 1, xQueueAIFrame);
-    register_human_face_detection(xQueueAIFrame, NULL, NULL, xQueueUSBFrame, false);
+    register_tuned_face_detection(xQueueAIFrame, xQueueUSBFrame, false);
     usb_camera_stream_start(xQueueUSBFrame);
     if (thermal_camera_ready) {
         thermal_stream_start();
@@ -106,8 +113,13 @@ extern "C" void app_main()
         // ESP-WHO exposes face detection as a one-shot flag. Preserve any
         // detection until the next telemetry sample instead of losing it
         // between the main loop's 100 ms polls and telemetry's 3 second polls.
-        face_detected_since_telemetry |= get_face_detected();
-        const bool person_detected = mmwave_sensor_person_detected();
+        face_detected_since_telemetry |= get_tuned_face_detected();
+        const bool mmwave_presence_detected = mmwave_sensor_presence_detected();
+        const bool thermal_heat_detected = thermal_camera_heat_trace_detected();
+        const bool human_presence_detected = face_detected_since_telemetry ||
+                                             mmwave_presence_detected ||
+                                             thermal_heat_detected;
+        gpio_set_level(LED_GPIO, human_presence_detected ? 1 : 0);
 
         // AM2302/DHT22 measurements should be spaced by at least two seconds.
         if (xTaskGetTickCount() - last_sensor_read >= pdMS_TO_TICKS(3000)) {
@@ -122,12 +134,13 @@ extern "C" void app_main()
             usb_telemetry_send(temperature_f, humidity_percent,
                                temperature_humidity_valid,
                                face_detected_since_telemetry,
-                               person_detected);
+                               mmwave_presence_detected,
+                               thermal_heat_detected,
+                               human_presence_detected);
 
             face_detected_since_telemetry = false;
         }
 
-        gpio_set_level(LED_GPIO, person_detected ? 1 : 0);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

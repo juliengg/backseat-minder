@@ -11,7 +11,8 @@ void usb_telemetry_init();
 // Values remain processed locally; this is development-only observability.
 void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool temperature_humidity_valid, bool face_detected,
-                        bool mmwave_person_detected);
+                        bool mmwave_presence_detected, bool thermal_heat_detected,
+                        bool human_presence_detected);
 
 // Sends one JPEG frame with a binary BSMF header. This is used only by the
 // development camera viewer connected to native USB.
@@ -19,6 +20,10 @@ bool usb_telemetry_send_camera_frame(const uint8_t *jpeg, size_t jpeg_length);
 
 // Sends a 32x24 MLX90640 CSV frame in a BSMH packet.
 bool usb_telemetry_send_thermal_frame(const char *csv, size_t csv_length);
+
+// Sends the current heat-trace state and 32x24 pixel bounding rectangle.
+bool usb_telemetry_send_heat_trace_bounds(bool detected, uint8_t x, uint8_t y,
+                                          uint8_t width, uint8_t height);
 
 // Returns true only while a native USB host is connected.
 bool usb_telemetry_host_connected();

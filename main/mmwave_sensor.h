@@ -5,4 +5,4 @@
 void mmwave_sensor_init();
 
 // Processes any pending sensor reports and returns the latest presence state.
-bool mmwave_sensor_person_detected();
+bool mmwave_sensor_presence_detected();

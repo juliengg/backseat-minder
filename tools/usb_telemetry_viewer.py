@@ -14,6 +14,29 @@ import sys
 import serial
 
 
+def detection_statuses(sample: dict) -> dict:
+    """Read sensor results, including packets from older firmware."""
+    face_detected = bool(sample.get("face_detected", False))
+    mmwave_presence_detected = bool(sample.get(
+        "mmwave_presence_detected", sample.get("mmwave_person_detected", False)))
+    thermal_heat_detected = bool(sample.get("heat_trace_detected", False))
+    return {
+        "Human presence": bool(sample.get(
+            "human_presence_detected",
+            face_detected or mmwave_presence_detected or thermal_heat_detected)),
+        "Face detected": face_detected,
+        "mmWave radar presence": mmwave_presence_detected,
+        "Thermal heat detected": thermal_heat_detected,
+    }
+
+
+def update_detection_labels(labels: dict, sample: dict) -> None:
+    for name, detected in detection_statuses(sample).items():
+        labels[name].configure(
+            text="✓" if detected else "✗",
+            fg="green" if detected else "red")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="View Backseat Minder cameras and telemetry")
     parser.add_argument("--port", required=True, help="COM port, e.g. COM4")
@@ -37,6 +60,7 @@ def show_viewer(device: serial.Serial) -> int:
         import numpy as np
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.figure import Figure
+        from matplotlib.patches import Rectangle
         from PIL import Image, ImageTk
     except ImportError:
         print("Install viewer dependencies with: "
@@ -62,8 +86,12 @@ def show_viewer(device: serial.Serial) -> int:
     figure = Figure(figsize=(4.8, view_height / 100), dpi=100)
     thermal_axis = figure.add_subplot(111)
     thermal_image = thermal_axis.imshow(
-        np.zeros((24, 32)), cmap="inferno", interpolation="bicubic",
+        np.zeros((24, 32)), cmap="jet", interpolation="bicubic",
         vmin=15, vmax=40, origin="upper")
+    heat_trace_rectangle = Rectangle(
+        (0, 0), 0, 0, fill=False, edgecolor="white", linewidth=2.5,
+        visible=False)
+    thermal_axis.add_patch(heat_trace_rectangle)
     colorbar = figure.colorbar(thermal_image, ax=thermal_axis)
     colorbar.set_label("Temperature (°C)")
     thermal_title = thermal_axis.set_title("Waiting for thermal frames…")
@@ -77,10 +105,25 @@ def show_viewer(device: serial.Serial) -> int:
     views.rowconfigure(0, weight=1)
     telemetry_label = tk.Label(root, text="Waiting for telemetry…",
                                justify="left", anchor="w")
-    telemetry_label.pack(fill="x", padx=12, pady=(0, 12))
+    telemetry_label.pack(fill="x", padx=12, pady=(0, 4))
+    detection_frame = tk.Frame(root)
+    detection_frame.pack(fill="x", padx=12, pady=(0, 12))
+    detection_labels = {}
+    for row, name in enumerate(detection_statuses({})):
+        font = (("TkDefaultFont", 12, "bold") if name == "Human presence"
+                else ("TkDefaultFont", 10))
+        name_label = tk.Label(detection_frame, text=f"{name}:", anchor="w",
+                              font=font)
+        name_label.grid(row=row, column=0, sticky="w")
+        status_label = tk.Label(detection_frame, text="—", anchor="center",
+                                width=3, fg="gray", font=font)
+        status_label.grid(row=row, column=1, sticky="n", padx=(8, 0))
+        detection_labels[name] = status_label
 
     receive_buffer = bytearray()
-    maximum_lengths = {b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000}
+    maximum_lengths = {
+        b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000, b"BSMD": 5,
+    }
     thermal_frame_count = 0
 
     def poll_device() -> None:
@@ -114,13 +157,14 @@ def show_viewer(device: serial.Serial) -> int:
             if packet_type == b"BSMT":
                 try:
                     sample = json.loads(payload.decode("utf-8"))
+                    if not isinstance(sample, dict):
+                        raise ValueError("expected a telemetry object")
                     telemetry_label.configure(
                         text=(f"Temperature: {sample.get('temperature_f', 0):.1f} °F\n"
                               f"Humidity: {sample.get('humidity_percent', 0):.1f} %\n"
-                              f"Face detected: {'yes' if sample.get('face_detected') else 'no'}\n"
-                              f"mmWave presence: {'yes' if sample.get('mmwave_person_detected') else 'no'}\n"
-                              f"Sensor valid: {sample.get('temperature_humidity_valid')}")
+                              f"Temperature/humidity valid: {sample.get('temperature_humidity_valid')}")
                     )
+                    update_detection_labels(detection_labels, sample)
                 except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
                     pass
                 continue
@@ -139,6 +183,20 @@ def show_viewer(device: serial.Serial) -> int:
                     thermal_canvas.draw_idle()
                 except (UnicodeDecodeError, ValueError):
                     pass
+                continue
+
+            if packet_type == b"BSMD":
+                if len(payload) == 5 and payload[0]:
+                    _, x, y, width, height = payload
+                    # imshow pixels are centered on integer coordinates, so
+                    # rectangle edges sit half a pixel outside the blob.
+                    heat_trace_rectangle.set_xy((x - 0.5, y - 0.5))
+                    heat_trace_rectangle.set_width(width)
+                    heat_trace_rectangle.set_height(height)
+                    heat_trace_rectangle.set_visible(True)
+                else:
+                    heat_trace_rectangle.set_visible(False)
+                thermal_canvas.draw_idle()
                 continue
 
             try:
