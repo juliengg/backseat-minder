@@ -4,7 +4,26 @@ import itertools
 import unittest
 from unittest.mock import Mock
 
-from usb_telemetry_viewer import detection_statuses, update_detection_labels
+from usb_telemetry_viewer import detection_statuses, update_detection_labels, regression_line
+
+
+class RegressionTests(unittest.TestCase):
+    def test_uses_last_ten_valid_samples_and_actual_times(self):
+        times = [-100, 0, 1, 3, 6, 10, 15, 21, 28, 36, 45, 46]
+        values = [9999] + [2 * x + 7 for x in times[1:-1]] + [float("nan")]
+        xs, ys = regression_line(times, values)
+        self.assertEqual(xs, [0, 45])
+        self.assertAlmostEqual(ys[0], 7)
+        self.assertAlmostEqual(ys[1], 97)
+
+    def test_waits_for_ten_readings(self):
+        self.assertEqual(regression_line(range(9), range(9)), ([], []))
+
+    def test_identical_timestamps_do_not_divide_by_zero(self):
+        self.assertEqual(regression_line([1] * 10, range(10)), ([], []))
+
+    def test_flat_readings(self):
+        self.assertEqual(regression_line(range(10), [50] * 10), ([0, 9], [50, 50]))
 
 
 class DetectionStatusTests(unittest.TestCase):

@@ -6,12 +6,32 @@ Run:     python tools/usb_telemetry_viewer.py --port COM4
 """
 
 import argparse
+from collections import deque
 import io
 import json
+import math
 import struct
 import sys
+import time
 
 import serial
+
+
+def regression_line(times, values):
+    """Return endpoints of a least-squares fit to the last 10 finite samples."""
+    points = [(x, y) for x, y in zip(times, values)
+              if math.isfinite(x) and math.isfinite(y)][-10:]
+    if len(points) < 10:
+        return [], []
+    xs, ys = zip(*points)
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    variance = sum((x - mean_x) ** 2 for x in xs)
+    if variance == 0:
+        return [], []
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in points) / variance
+    endpoints = [xs[0], xs[-1]]
+    return endpoints, [mean_y + slope * (x - mean_x) for x in endpoints]
 
 
 def detection_statuses(sample: dict) -> dict:
@@ -103,11 +123,15 @@ def show_viewer(device: serial.Serial) -> int:
     views.columnconfigure(0, weight=1)
     views.columnconfigure(1, weight=1)
     views.rowconfigure(0, weight=1)
-    telemetry_label = tk.Label(root, text="Waiting for telemetry…",
+    lower_panel = tk.Frame(root)
+    lower_panel.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+    values_frame = tk.Frame(lower_panel)
+    values_frame.pack(side="left", fill="y", padx=(0, 12))
+    telemetry_label = tk.Label(values_frame, text="Waiting for telemetry…",
                                justify="left", anchor="w")
-    telemetry_label.pack(fill="x", padx=12, pady=(0, 4))
-    detection_frame = tk.Frame(root)
-    detection_frame.pack(fill="x", padx=12, pady=(0, 12))
+    telemetry_label.pack(fill="x", pady=(0, 4))
+    detection_frame = tk.Frame(values_frame)
+    detection_frame.pack(fill="x")
     detection_labels = {}
     for row, name in enumerate(detection_statuses({})):
         font = (("TkDefaultFont", 12, "bold") if name == "Human presence"
@@ -120,6 +144,69 @@ def show_viewer(device: serial.Serial) -> int:
         status_label.grid(row=row, column=1, sticky="n", padx=(8, 0))
         detection_labels[name] = status_label
 
+    plot_frame = tk.LabelFrame(lower_panel, text="Temperature and humidity — last 5 minutes")
+    plot_frame.pack(side="left", fill="both", expand=True)
+    trend_figure = Figure(figsize=(6.5, 2.8), dpi=100)
+    temperature_axis = trend_figure.add_subplot(111)
+    humidity_axis = temperature_axis.twinx()
+    temperature_line, = temperature_axis.plot(
+        [], [], color="tab:red", label="Temperature", marker=".", markersize=3)
+    humidity_line, = humidity_axis.plot(
+        [], [], color="tab:blue", label="Humidity", marker=".", markersize=3)
+    temperature_fit, = temperature_axis.plot(
+        [], [], color="darkred", linestyle="--", linewidth=2, zorder=4,
+        label="Temperature fit (10 readings)")
+    humidity_fit, = humidity_axis.plot(
+        [], [], color="navy", linestyle="--", linewidth=2, zorder=4,
+        label="Humidity fit (10 readings)")
+    temperature_axis.set_xlabel("Time (seconds)")
+    temperature_axis.set_ylabel("Temperature (°F)", color="tab:red")
+    humidity_axis.set_ylabel("Humidity (%)", color="tab:blue")
+    temperature_axis.tick_params(axis="y", labelcolor="tab:red")
+    humidity_axis.tick_params(axis="y", labelcolor="tab:blue")
+    temperature_axis.set_xlim(0, 300)
+    temperature_axis.set_ylim(32, 120)
+    humidity_axis.set_ylim(0, 100)
+    temperature_axis.grid(True, alpha=0.25)
+    temperature_axis.legend(
+        handles=[temperature_line, humidity_line, temperature_fit, humidity_fit],
+        loc="upper left", fontsize=8, ncol=2)
+    trend_figure.tight_layout()
+    trend_canvas = FigureCanvasTkAgg(trend_figure, master=plot_frame)
+    trend_canvas.get_tk_widget().pack(fill="both", expand=True)
+    history = deque(maxlen=3000)
+    first_reading_time = None
+
+    def update_trend(sample: dict) -> None:
+        nonlocal first_reading_time
+        now = time.monotonic()
+        if first_reading_time is None:
+            first_reading_time = now
+        try:
+            temperature = float(sample["temperature_f"])
+            humidity = float(sample["humidity_percent"])
+            valid = (sample.get("temperature_humidity_valid", False)
+                     and np.isfinite(temperature) and np.isfinite(humidity))
+        except (KeyError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            # Gaps prevent failed sensor reads from looking like real measurements.
+            temperature = humidity = float("nan")
+        history.append((now, temperature, humidity))
+        while history and history[0][0] < now - 300:
+            history.popleft()
+        times, temperatures, humidities = zip(*history)
+        elapsed = [timestamp - first_reading_time for timestamp in times]
+        temperature_line.set_data(elapsed, temperatures)
+        humidity_line.set_data(elapsed, humidities)
+        temperature_fit.set_data(*regression_line(elapsed, temperatures))
+        humidity_fit.set_data(*regression_line(elapsed, humidities))
+        latest_time = now - first_reading_time
+        temperature_axis.set_xlim(max(0, latest_time - 300), max(300, latest_time))
+        temperature_axis.relim()
+        temperature_axis.autoscale_view(scalex=False, scaley=True)
+        trend_canvas.draw_idle()
+
     receive_buffer = bytearray()
     maximum_lengths = {
         b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000, b"BSMD": 5,
@@ -129,7 +216,8 @@ def show_viewer(device: serial.Serial) -> int:
     def poll_device() -> None:
         nonlocal thermal_frame_count
         available = device.in_waiting
-        receive_buffer.extend(device.read(available if available else 1))
+        if available:
+            receive_buffer.extend(device.read(available))
 
         while True:
             candidates = [receive_buffer.find(marker) for marker in maximum_lengths]
@@ -159,6 +247,7 @@ def show_viewer(device: serial.Serial) -> int:
                     sample = json.loads(payload.decode("utf-8"))
                     if not isinstance(sample, dict):
                         raise ValueError("expected a telemetry object")
+                    update_trend(sample)
                     telemetry_label.configure(
                         text=(f"Temperature: {sample.get('temperature_f', 0):.1f} °F\n"
                               f"Humidity: {sample.get('humidity_percent', 0):.1f} %\n"
