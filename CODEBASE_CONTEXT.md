@@ -2,9 +2,9 @@
 
 ## Purpose
 
-This repository contains ESP-IDF firmware for an **ESP32-S3 camera-based back-seat occupancy reminder prototype**. Its implemented safety signal is face detection: when the camera AI pipeline detects a face, the device turns on an indicator LED.
+This repository contains ESP-IDF firmware for an **ESP32-S3 camera-based back-seat occupancy reminder prototype**. The indicator LED reflects the combined face, mmWave and thermal presence signals.
 
-The project also provides an on-device captive-portal setup flow for collecting and persisting contact-related settings. It does **not** currently send messages, place calls, contact emergency services, or make an automated safety decision beyond setting the LED state.
+The project also provides an on-device captive-portal setup flow for collecting and persisting contact-related settings. A primary BOOT press/release can now request a test SMS through the secondary ESP32 in `cell/`. Real sending defaults off for bring-up. There are no automatic sensor-triggered SMS alerts, calls or emergency-services integrations.
 
 ## Platform and Build
 
@@ -31,7 +31,11 @@ idf.py -p COM4 flash monitor
 | File | Role |
 | --- | --- |
 | `main/app_main.cpp` | Firmware entry point; initializes setup support, camera/face detection, and the main LED loop. |
-| `main/driver_presence.cpp` | BOOT-button placeholder for driver presence, debounce, and deep-sleep wake configuration. |
+| `main/boot_button.cpp` | Debounced BOOT press/release event; no sleep or driver-presence toggle. |
+| `main/cellular_link.cpp` | UART2 SMS worker, acknowledgement/result logging, busy guard and timeouts. |
+| `main/cellular_diagnostics.cpp` | Thread-safe last-eight-event history, sent over native USB as BSMC JSON snapshots. |
+| `shared/cellular_protocol.h` | Shared bounded framing and phone/message validation. |
+| `cell/src/main.cpp` | Secondary UART command service and TEL0161 modem transactions. |
 | `main/setup_mode.h` | Public interface for setup mode. |
 | `main/setup_mode.cpp` | Captive portal, Wi-Fi access point, DNS redirection, form parsing, and NVS configuration storage. |
 | `main/CMakeLists.txt` | Registers application source files and component dependencies. |
@@ -49,14 +53,14 @@ idf.py -p COM4 flash monitor
 4. A FreeRTOS queue is created for camera frames.
 5. The ESP-WHO camera pipeline is registered for RGB565/QVGA frames and face detection.
 6. The application polls with a 20 ms delay between iterations:
-   - checks the BOOT-button driver-presence placeholder and sleeps when present;
+   - checks BOOT press/release and queues `Testing` to the saved primary number;
    - checks whether GPIO 38 is being held, and enters setup mode if so;
    - every three seconds, updates in-memory `temperature_f` and `humidity_percent`
      values from an AM2302/DHT22 sensor on GPIO 1;
-   - reads `get_face_detected()` from the face-detection component;
-   - sets GPIO 2 high when a face is detected and low otherwise.
+   - reads `get_tuned_face_detected()` and the mmWave/thermal presence signals;
+   - sets GPIO 2 high when any of those signals indicates presence and low otherwise.
 
-Face detection is therefore the only active occupancy-related behavior in the checked-in application code.
+These presence signals drive the LED and USB telemetry; they do not automatically trigger SMS.
 
 ### Optional USB development telemetry
 
@@ -94,34 +98,36 @@ The preview is JPEG-compressed and limited to one frame per second to avoid maki
 debugging alter normal face-detection behavior. It uses the detected-frame output, so
 face boxes may be visible in the preview.
 
-### Driver presence and deep sleep
+### Manual cellular SMS test
 
-- Power-on/reset starts **driver absent**, with monitoring active.
-- Press and release the onboard **BOOT button (GPIO 0)** to mark the driver
-  **present** and enter ESP32 deep sleep. Both press and release are debounced
-  for 50 ms; sleep waits for release to avoid waking from the same press.
-- Press BOOT again to wake through active-low RTC EXT0 and mark the driver
-  **absent**. Deep-sleep wake restarts the application and initializes monitoring
-  again. A held wake button is ignored until released, preventing a second toggle.
-- The indicator output and NeoPixel data output are held low during sleep.
-  Processing and USB telemetry stop; the USB connection may need reconnecting
-  in the host viewer after wake. External sensors and board power LEDs can still
-  consume power: this firmware does not switch their supply rails.
-- The separate GPIO 38 setup button works while awake. During a blocking setup
-  session BOOT is not polled; wake with BOOT before using setup.
-- `driver_presence_is_present()` isolates the placeholder input. Integration of
-  a real detector must also replace the BOOT wake source with a signal that can
-  wake the ESP32 when the driver leaves; software is stopped during deep sleep.
+The firmware remains in normal active mode. BOOT (GPIO0) produces one event after
+both press and release have been stable for 50 ms; a startup-held button is ignored
+until released. Driver-presence toggling and deep sleep have been removed.
 
-Hardware verification after flashing:
+The primary reads and normalizes only `bsm_cfg/phone`, then queues
+`SEND_SMS|number|Testing` through UART2 TX39/RX40 at 115200 8N1. A worker logs the
+secondary acknowledgement and final result without blocking monitoring. Another
+press while active logs `BUSY`. There are no automatic retries; after a 3-second
+ACK timeout the link stays busy until a result or the 110-second overall deadline.
 
-1. Confirm normal camera/sensor telemetry and indicator behavior on startup.
-2. Press and release BOOT; confirm the driver-present log, indicator off, stopped
-   telemetry, and reduced supply current with a meter.
-3. Press BOOT to wake; confirm the driver-absent log and resumed monitoring after
-   initialization. Hold BOOT during wake, then release: it must stay awake.
-4. Repeat several sleep/wake cycles, including holding BOOT before sleeping
-   (sleep must wait for release). Confirm GPIO 38 still opens setup while awake.
+The secondary is an ESP32-WROOM-32 development board (`esp32dev` in PlatformIO).
+Its UART2 RX26/TX27 connects to primary TX39/RX40 respectively. It owns modem UART1
+RX18/TX19, validates commands, checks modem/SIM/network
+readiness, and reports a bounded result. It sends the exact requested message and
+stores no recipient. Real sending defaults off (`BSM_SEND_REAL_SMS=0`); a successful
+dry-run check returns `RESULT|ERROR|DRY_RUN`. `RESULT|OK` means modem acceptance,
+not proof of handset delivery.
+
+See [cell/README.md](cell/README.md) for wiring, enablement, build commands, timeout
+policy and bench acceptance checks. Keep the primary's microSD slot empty: GPIO39/40
+share its bus. GPIO38 setup, UART1 mmWave, camera, other sensors and USB retain their
+existing behavior. During the blocking setup session BOOT is not polled.
+
+The Python USB viewer displays a Cellular SMS panel with the latest summary and
+recent timestamped events. `usb_telemetry_send()` sends a `BSMC` JSON snapshot with
+each sensor sample (about every three seconds), preserving short-lived ACK/results
+without making the SMS worker wait on USB. No recipient or SMS content is included.
+The panel marks telemetry stale after ten seconds without a valid cellular packet.
 
 ### Setup mode
 
@@ -151,12 +157,13 @@ Settings are stored in ESP32 nonvolatile storage (NVS):
 
 Each phone/contact field is capped at 31 characters plus a null terminator in memory. The setup page reloads saved values when it is reopened.
 
-These fields are currently **stored only**. No application logic consumes them after setup mode saves them.
+The primary `phone` field is read for each manual SMS request through `setup_mode_get_phone_number()`. The helper strips common phone formatting and rejects missing or malformed values. Emergency contacts and the emergency-alert toggle remain stored only.
 
 ## Hardware Assumptions
 
-- ESP32-S3 device with a supported camera, likely aligned with ESP-WHO ESP32-S3-EYE support.
-- GPIO 0: active-low onboard BOOT button for driver presence and deep-sleep wake.
+- Freenove ESP32-S3 WROOM with the custom camera pin map in `sdkconfig`.
+- GPIO 0: active-low onboard BOOT button for a manual test SMS press/release.
+- GPIO 39/40: cellular UART2 TX/RX; microSD slot must remain empty.
 - GPIO 38: active-low external setup button, using the internal pull-up.
 - GPIO 2: external/status LED output used for face-detection status and setup-mode blinking.
 - GPIO 1: AM2302/DHT22 single-wire temperature and relative-humidity sensor data pin.
@@ -184,7 +191,7 @@ The camera and face-detection entry points (`register_camera`, `register_human_f
 ## Security and Product Notes
 
 - Setup Wi-Fi is intentionally open. Anyone within range while setup mode is active can view and submit the configuration form.
-- The portal logs its complete submitted form body and saved phone/contact values to the serial log. These are personally sensitive values and should be removed or redacted before production use.
+- Setup logs no longer print the submitted form body or saved phone/contact values. Cellular logs redact the recipient.
 - Form values are inserted into HTML without HTML escaping. Phone-style values are the intended input, but untrusted input could still affect the rendered page on a later setup visit.
 - The emergency-alert wording in the UI is aspirational. There is no emergency-services integration in the current code.
 - Face detection alone is not a reliable determination of a child, passenger, vehicle state, or emergency. Any real safety product needs additional sensors, failure handling, user testing, privacy design, and appropriate regulatory/legal review.
@@ -192,11 +199,11 @@ The camera and face-detection entry points (`register_camera`, `register_human_f
 ## Current Gaps / Likely Next Work
 
 - Define the actual alert policy (when to alert, how long to wait, how to cancel, and failure behavior).
-- Add a communications mechanism (for example, a companion phone app, cellular modem, or cloud service) if notifications are required.
-- Read and use saved contact and alert settings in the runtime logic.
+- Complete cellular bench verification and define any future automatic alert policy.
+- Define runtime handling for emergency contacts and alert settings; only the primary phone is currently used.
 - Add secure provisioning/access control and avoid logging personal data.
 - Validate camera/face-detection accuracy and recovery behavior under real vehicle lighting, motion, heat, and network conditions.
-- Add tests or hardware-in-the-loop verification; none are present in this repository.
+- Extend the cellular host tests in `tests/` with hardware-in-the-loop verification.
 
 ## Guidance for Future LLM Work
 

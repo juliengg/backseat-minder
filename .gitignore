@@ -12,3 +12,10 @@ managed_components/
 # IDE
 .vscode/
 .idea/
+
+# PlatformIO and local verification environments
+cell/.pio/
+.pio-core/
+.venv-cell/
+tests/.build/
+__pycache__/

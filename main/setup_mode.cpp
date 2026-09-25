@@ -1,4 +1,5 @@
 #include "setup_mode.h"
+#include "cellular_protocol.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -430,7 +431,6 @@ static esp_err_t confirm_post_handler(httpd_req_t *req)
     }
     body[received] = '\0';
 
-    ESP_LOGI(TAG, "POST body: %s", body);
 
     bsm_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -447,8 +447,7 @@ static esp_err_t confirm_post_handler(httpd_req_t *req)
     free(body);
 
     nvs_save_config(&cfg);
-    ESP_LOGI(TAG, "Saved -> phone='%s' ec1='%s' ec2='%s' ec3='%s' emerg=%d",
-             cfg.phone, cfg.ec1, cfg.ec2, cfg.ec3, cfg.emerg_alerts);
+    ESP_LOGI(TAG, "Contact configuration saved");
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, CONFIRM_HTML, HTTPD_RESP_USE_STRLEN);
@@ -571,6 +570,29 @@ static void start_ap(void)
 }
 
 // ─── PUBLIC API ────────────────────────────────────────────────
+
+bool setup_mode_get_phone_number(char *buffer, size_t capacity)
+{
+    if (!buffer || capacity == 0) return false;
+    buffer[0] = '\0';
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
+    char saved[MAX_PHONE_LEN] = {};
+    size_t length = sizeof(saved);
+    const esp_err_t result = nvs_get_str(handle, NVS_KEY_PHONE, saved, &length);
+    nvs_close(handle);
+    if (result != ESP_OK) return false;
+
+    char normalized[MAX_PHONE_LEN] = {};
+    size_t used = 0;
+    for (const char *p = saved; *p; ++p) {
+        if (*p == ' ' || *p == '-' || *p == '(' || *p == ')' || *p == '.') continue;
+        normalized[used++] = *p;
+    }
+    if (!cellular::valid_number(normalized) || used + 1 > capacity) return false;
+    memcpy(buffer, normalized, used + 1);
+    return true;
+}
 
 void setup_mode_init()
 {

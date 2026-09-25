@@ -1,200 +1,218 @@
-/* Send one SMS with a DFRobot TEL0161 (SIM7600G) from a Freenove ESP32-S3 WROOM. */
-
+/* Secondary ESP32: bounded UART SMS service for the TEL0161/SIM7600G. */
 #include <Arduino.h>
+#include <stdlib.h>
+#include <string.h>
 #include "config.h"
+#include "cellular_protocol.h"
 
 HardwareSerial modem(1);
-static bool buttonWasPressed = false;
+HardwareSerial primary(2);
 
-static bool waitFor(const char *expected, uint32_t timeoutMs) {
-  String received;
+static cellular::LineBuffer input;
+static bool busy = false;
+static bool frameReceivedWhileBusy = false;
+static uint32_t transactionStarted = 0;
+static uint32_t modemStarted = 0;
+
+static void servicePrimary();
+
+static bool transactionExpired() {
+  return millis() - transactionStarted >= cellular::MODEM_TIMEOUT_MS;
+}
+
+static void serviceDelay(uint32_t duration) {
   const uint32_t started = millis();
+  while (millis() - started < duration && !transactionExpired()) {
+    servicePrimary();
+    delay(2);
+  }
+}
 
-  while (millis() - started < timeoutMs) {
-    while (modem.available()) {
+static void discardModemInput() {
+  // Bounded even if a faulty module streams unsolicited bytes continuously.
+  for (size_t n = 0; n < 1024 && modem.available(); ++n) modem.read();
+}
+
+static bool waitReply(char *reply, size_t capacity, const char *expected,
+                      uint32_t timeoutMs, bool requireFinalOk = false) {
+  size_t used = 0;
+  reply[0] = '\0';
+  const uint32_t started = millis();
+  while (millis() - started < timeoutMs && !transactionExpired()) {
+    servicePrimary(); // Reject another command promptly, including during CMGS.
+    for (size_t n = 0; n < 64 && modem.available(); ++n) {
       const char c = static_cast<char>(modem.read());
       Serial.write(c);
-      received += c;
-      if (received.indexOf(expected) >= 0) return true;
-      if (received.indexOf("ERROR") >= 0 || received.indexOf("+CMS ERROR:") >= 0 ||
-          received.indexOf("+CME ERROR:") >= 0) return false;
+      if (used + 1 >= capacity) {
+        Serial.println("\nModem response too long.");
+        return false;
+      }
+      reply[used++] = c;
+      reply[used] = '\0';
+      if (strstr(reply, "ERROR")) return false;
+      if (strstr(reply, expected) &&
+          (!requireFinalOk || strstr(reply, "\r\nOK\r\n"))) return true;
     }
     delay(2);
   }
-
-  Serial.printf("\nTimed out waiting for: %s\n", expected);
+  Serial.println("\nModem response timeout.");
   return false;
 }
 
-static bool command(const char *atCommand, const char *expected = "OK", uint32_t timeoutMs = 3000) {
-  while (modem.available()) modem.read();
+static bool command(const char *atCommand, char *reply, size_t capacity,
+                    uint32_t timeoutMs = 3000) {
+  if (transactionExpired()) return false;
+  discardModemInput();
   Serial.printf("\n>> %s\n", atCommand);
   modem.print(atCommand);
   modem.print("\r\n");
-  return waitFor(expected, timeoutMs);
+  return waitReply(reply, capacity, "\r\nOK\r\n", timeoutMs);
 }
 
-static bool modemIsReady() {
-  for (uint8_t attempt = 1; attempt <= 10; ++attempt) {
-    if (command("AT")) return true;
-    Serial.printf("No response yet (attempt %u/10).\n", attempt);
-    delay(1000);
+static bool registered(const char *reply, const char *prefix) {
+  const char *p = strstr(reply, prefix);
+  if (!p) return false;
+  p += strlen(prefix);
+  char *end = nullptr;
+  long status = strtol(p, &end, 10);
+  if (end == p) return false;
+  while (*end == ' ') ++end;
+  if (*end == ',') {
+    p = end + 1; // Read response is <n>,<stat>; URCs can contain just <stat>.
+    status = strtol(p, &end, 10);
+    if (end == p) return false;
   }
-  return false;
+  return status == 1 || status == 5; // Home or roaming.
 }
 
-static bool sendSms(const char *number, const char *message) {
-  if (!command("AT+CMGF=1")) return false;
-  if (!command("AT+CSCS=\"GSM\"")) return false;
-
-  while (modem.available()) modem.read();
-  Serial.printf("\n>> AT+CMGS=\"%s\"\n", number);
-  modem.printf("AT+CMGS=\"%s\"\r\n", number);
-  if (!waitFor(">", 5000)) {
-    Serial.println("The modem did not accept the SMS recipient.");
-    return false;
+static const char *sendSms(const cellular::Sms &sms) {
+  char reply[768];
+  // The listener is live immediately, even during modem power-up.
+  while (millis() - modemStarted < MODEM_BOOT_WAIT_MS && !transactionExpired()) {
+    serviceDelay(20);
   }
-
-  Serial.printf(">> Sending: %s\n", message);
-  modem.print(message);
-  modem.write(0x1A);  // Ctrl-Z submits the SMS.
-  if (!waitFor("+CMGS:", 60000)) return false;
-  return waitFor("OK", 5000);
-}
-
-static bool readModemReply(const char *atCommand, String &reply, uint32_t timeoutMs = 5000) {
-  while (modem.available()) modem.read();
-  reply = "";
-  Serial.printf("\n>> %s\n", atCommand);
-  modem.print(atCommand);
-  modem.print("\r\n");
-
-  const uint32_t started = millis();
-  while (millis() - started < timeoutMs) {
-    while (modem.available()) {
-      const char c = static_cast<char>(modem.read());
-      Serial.write(c);
-      reply += c;
-      if (reply.indexOf("ERROR") >= 0) return false;
-      if (reply.indexOf("\r\nOK\r\n") >= 0) return true;
+  bool ready = false;
+  for (uint8_t attempt = 1; attempt <= 10 && !transactionExpired(); ++attempt) {
+    if (command("AT", reply, sizeof(reply))) {
+      ready = true;
+      break;
     }
-    delay(2);
+    Serial.printf("No modem response (attempt %u/10).\n", attempt);
+    serviceDelay(1000);
   }
-
-  Serial.println("\nTimed out waiting for a modem response.");
-  return false;
-}
-
-static String gnssField(const String &line, uint8_t wantedField) {
-  uint8_t field = 0;
-  int start = 0;
-  for (int i = 0; i <= line.length(); ++i) {
-    if (i == line.length() || line[i] == ',') {
-      if (field == wantedField) return line.substring(start, i);
-      ++field;
-      start = i + 1;
-    }
-  }
-  return "";
-}
-
-static bool getCellTowerLocation(String &location) {
-  Serial.println("Trying approximate cell-tower location fallback...");
-  // The SIM7600 LBS service needs a PDP data connection with the carrier's APN.
-  const String pdpContext = String("AT+CGDCONT=1,\"IP\",\"") + CELLULAR_APN + "\"";
-  if (!command(pdpContext.c_str()) || !command("AT+CSOCKSETPN=1")) {
-    Serial.println("Could not configure cellular data for cell-tower location.");
-    return false;
-  }
-
-  String reply;
-  readModemReply("AT+CNETSTART", reply, 30000);
-  if (reply.indexOf("+CNETSTART: 0") < 0 && reply.indexOf("+CNETSTART:0") < 0) {
-    Serial.println("Cellular data did not start. Check that the SIM plan includes data and that CELLULAR_APN is correct.");
-    return false;
-  }
-
-  const bool responseReceived = readModemReply("AT+CLBS=1", reply, 30000);
-  command("AT+CNETSTOP", "OK", 10000);
-  if (!responseReceived) return false;
-
-  const int prefix = reply.indexOf("+CLBS:");
-  if (prefix < 0) return false;
-  const int lineEnd = reply.indexOf('\n', prefix);
-  String line = reply.substring(prefix + 6, lineEnd < 0 ? reply.length() : lineEnd);
-  line.trim();
-
-  const String resultCode = gnssField(line, 0);
-  const String latitude = gnssField(line, 1);
-  const String longitude = gnssField(line, 2);
-  if (resultCode != "0" || latitude.length() == 0 || longitude.length() == 0) {
-    Serial.printf("Cell-tower location was unavailable (result code: %s).\n", resultCode.c_str());
-    return false;
-  }
-
-  location = "[" + longitude + ", " + latitude + "]";
-  Serial.println("Using approximate cell-tower location.");
-  return true;
-}
-
-static void handleTrigger() {
-  Serial.println("\nTrigger received; checking the TEL0161...");
-  if (!modemIsReady()) {
-    Serial.println("ERROR: No modem response. Check power, UART wiring, pins, and baud rate.");
-    return;
-  }
-
-  command("ATE0");
-  command("AT+CMEE=2");
-  command("AT+CPIN?");
-  command("AT+CSQ");
-  command("AT+CREG?");
-  command("AT+CEREG?");
-
-  String smsMessage = SMS_MESSAGE;
-  String location;
-  if (getCellTowerLocation(location)) {
-    smsMessage += " Approximate location: ";
-    smsMessage += location;
-  } else {
-    smsMessage += " Location: unavailable";
-  }
+  if (!ready) return "MODEM_UNAVAILABLE";
+  if (!command("ATE0", reply, sizeof(reply)) ||
+      !command("AT+CMEE=2", reply, sizeof(reply))) return "MODEM_SETUP";
+  if (!command("AT+CPIN?", reply, sizeof(reply)) ||
+      !strstr(reply, "+CPIN: READY")) return "SIM_NOT_READY";
+  command("AT+CSQ", reply, sizeof(reply)); // Diagnostic, not a registration test.
+  const bool circuitRegistered = command("AT+CREG?", reply, sizeof(reply)) &&
+                                 registered(reply, "+CREG:");
+  const bool epsRegistered = command("AT+CEREG?", reply, sizeof(reply)) &&
+                             registered(reply, "+CEREG:");
+  if (!circuitRegistered && !epsRegistered) return "NOT_REGISTERED";
+  if (!command("AT+CMGF=1", reply, sizeof(reply)) ||
+      !command("AT+CSCS=\"GSM\"", reply, sizeof(reply))) return "SMS_SETUP";
+  if (transactionExpired()) return "MODEM_TIMEOUT";
 
   if (!SEND_REAL_SMS) {
-    Serial.printf("\nTEST MODE: would send to %s:\n%s\n", DESTINATION_NUMBER, smsMessage.c_str());
-    Serial.println("Set SEND_REAL_SMS to true in include/config.h once the SIM is active and tested.");
-    return;
+    Serial.printf("DRY RUN: modem ready; would send %u characters. Recipient redacted.\n",
+                  static_cast<unsigned>(strlen(sms.message)));
+    // Never claim success for an SMS that was deliberately not submitted.
+    return "DRY_RUN";
   }
 
-  Serial.println("\nSending SMS...");
-  if (sendSms(DESTINATION_NUMBER, smsMessage.c_str())) {
-    Serial.println("\nSUCCESS: modem accepted the SMS for sending.");
-  } else {
-    Serial.println("\nFAILED: see the modem response above for the reason.");
+  discardModemInput();
+  Serial.println("\n>> AT+CMGS (recipient redacted)");
+  modem.printf("AT+CMGS=\"%s\"\r\n", sms.number);
+  if (!waitReply(reply, sizeof(reply), ">", 5000)) {
+    modem.write(0x1B); // Escape text entry if the prompt arrived late.
+    return "SMS_PROMPT";
+  }
+  if (transactionExpired()) {
+    modem.write(0x1B);
+    return "MODEM_TIMEOUT";
+  }
+  Serial.printf("Submitting %u characters.\n", static_cast<unsigned>(strlen(sms.message)));
+  modem.print(sms.message);
+  modem.write(0x1A);
+  // One buffer retains both +CMGS and OK, even if they arrive in the same burst.
+  if (!waitReply(reply, sizeof(reply), "+CMGS:", 65000, true)) {
+    if (strstr(reply, "ERROR")) return "SMS_REJECTED";
+    // After Ctrl-Z the network may already have accepted the message. Drain
+    // late replies for the rest of the transaction window before going idle.
+    // A later deliberate press is a new request; we never retry this one.
+    while (!transactionExpired()) {
+      servicePrimary();
+      discardModemInput();
+      delay(2);
+    }
+    return "SMS_OUTCOME_UNKNOWN";
+  }
+  return nullptr;
+}
+
+static void reportError(const char *reason) {
+  primary.printf("RESULT|ERROR|%s\n", reason);
+  Serial.printf("RESULT|ERROR|%s\n", reason);
+}
+
+static void servicePrimary() {
+  // Bound each poll so malformed traffic cannot starve modem deadlines.
+  for (size_t n = 0; n < 256 && primary.available(); ++n) {
+    const char c = static_cast<char>(primary.read());
+    frameReceivedWhileBusy |= busy;
+    const auto event = input.push(c);
+    const bool rejectBusy = frameReceivedWhileBusy;
+    if (c == '\n') frameReceivedWhileBusy = false;
+    if (event == cellular::FrameEvent::None) continue;
+    if (event == cellular::FrameEvent::Oversized) {
+      reportError("FRAME_TOO_LONG");
+      continue;
+    }
+    if (event == cellular::FrameEvent::Invalid) {
+      reportError("BAD_FRAME");
+      continue;
+    }
+    if (rejectBusy) {
+      reportError("BUSY");
+      continue;
+    }
+    cellular::Sms sms = {};
+    const char *error = cellular::parse_sms(input.data(), sms);
+    if (error) {
+      reportError(error);
+      continue;
+    }
+    busy = true;
+    transactionStarted = millis();
+    primary.print("ACCEPTED\n");
+    Serial.printf("SEND_SMS|<redacted>|%s\nACCEPTED\n", sms.message);
+    error = sendSms(sms);
+    // Handle already-buffered extra commands as BUSY before completing this one.
+    servicePrimary();
+    if (error) reportError(error);
+    else {
+      primary.print("RESULT|OK\n");
+      Serial.println("RESULT|OK (modem accepted SMS; not a delivery receipt)");
+    }
+    busy = false;
   }
 }
 
 void setup() {
   Serial.begin(DEBUG_BAUD);
-  delay(1000);
-  Serial.println("\nTEL0161 SMS sender ready.");
-  Serial.println("Press and release BOOT to run the SMS test.");
-
-  pinMode(TRIGGER_BUTTON_PIN, INPUT_PULLUP);
+  primary.setRxBufferSize(1024);
+  primary.begin(cellular::BAUD, SERIAL_8N1, PRIMARY_RX_PIN, PRIMARY_TX_PIN);
   modem.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
-  delay(MODEM_BOOT_WAIT_MS);
+  modemStarted = millis();
+  Serial.printf("\nTEL0161 UART SMS service ready: UART2 RX%d/TX%d, 115200 8N1.\n",
+                PRIMARY_RX_PIN, PRIMARY_TX_PIN);
+  Serial.println(SEND_REAL_SMS ? "Real SMS enabled." : "DRY RUN: real SMS disabled.");
 }
 
 void loop() {
-  // Ignore unsolicited modem bytes while idle. Some modules emit binary
-  // diagnostics at startup; responses are still printed during a trigger.
-  while (modem.available()) modem.read();
-
-  const bool buttonIsPressed = digitalRead(TRIGGER_BUTTON_PIN) == LOW;
-  if (buttonIsPressed && !buttonWasPressed) {
-    delay(30);  // Simple debounce before treating it as a trigger.
-    if (digitalRead(TRIGGER_BUTTON_PIN) == LOW) handleTrigger();
-  }
-  buttonWasPressed = buttonIsPressed;
-  delay(20);
+  servicePrimary();
+  discardModemInput();
+  delay(2);
 }

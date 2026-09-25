@@ -1,4 +1,5 @@
 #include "usb_telemetry.h"
+#include "cellular_diagnostics.h"
 
 #include <stdio.h>
 
@@ -104,6 +105,13 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
     if (length > 0 && length < static_cast<int>(sizeof(message))) {
         send_packet("BSMT", reinterpret_cast<const uint8_t *>(message),
                     static_cast<size_t>(length));
+    }
+    // Repeat the recent history with each sensor sample so dropped USB packets
+    // or opening the viewer after a result do not lose the summary.
+    char cellular[1024];
+    const size_t cellular_length = cellular_diagnostics_json(cellular, sizeof(cellular));
+    if (cellular_length) {
+        send_packet("BSMC", reinterpret_cast<const uint8_t *>(cellular), cellular_length);
     }
     xSemaphoreGive(s_write_mutex);
 }

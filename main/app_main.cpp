@@ -17,7 +17,9 @@
 
 #include "who_camera.h"
 #include "driver/gpio.h"
-#include "driver_presence.h"
+#include "boot_button.h"
+#include "cellular_link.h"
+#include "cellular_diagnostics.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -74,7 +76,12 @@ void thermal_stream_start()
 extern "C" void app_main()
 {
     setup_mode_init();  // handles NVS, button GPIO
-    driver_presence_init();
+    boot_button_init();
+    const esp_err_t cellular_status = cellular_link_init();
+    if (cellular_status != ESP_OK) {
+        ESP_LOGW("app_main", "Cellular link unavailable: %s", esp_err_to_name(cellular_status));
+        cellular_diagnostics_record("LINK_UNAVAILABLE");
+    }
 
     // Suppress the onboard NeoPixel (GPIO 48) by driving it low.
     // Without this the camera driver leaves the data line floating,
@@ -86,11 +93,6 @@ extern "C" void app_main()
     gpio_reset_pin(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_GPIO, 0);
-
-    // Restore GPIO ownership after the output holds used during deep sleep.
-    gpio_hold_dis(LED_GPIO);
-    gpio_hold_dis(NEOPIXEL_GPIO);
-    gpio_deep_sleep_hold_dis();
 
     temp_humidity_sensor_init();
     mmwave_sensor_init();
@@ -114,13 +116,14 @@ extern "C" void app_main()
 
     while (true)
     {
-        if (driver_presence_is_present()) {
-            gpio_set_level(LED_GPIO, 0);
-            gpio_set_level(NEOPIXEL_GPIO, 0);
-            gpio_hold_en(LED_GPIO);
-            gpio_hold_en(NEOPIXEL_GPIO);
-            gpio_deep_sleep_hold_en();
-            driver_presence_sleep();
+        if (boot_button_released()) {
+            char phone[32];
+            if (setup_mode_get_phone_number(phone, sizeof(phone))) {
+                cellular_link_send_sms(phone, "Testing");
+            } else {
+                ESP_LOGW("app_main", "No valid phone number configured; save a number in setup mode before sending SMS");
+                cellular_diagnostics_record("NO_PHONE");
+            }
         }
 
         if (setup_mode_button_pressed())

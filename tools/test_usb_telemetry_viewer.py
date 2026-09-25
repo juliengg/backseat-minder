@@ -5,6 +5,56 @@ import unittest
 from unittest.mock import Mock
 
 from usb_telemetry_viewer import detection_statuses, update_detection_labels, regression_line
+from usb_telemetry_viewer import cellular_view, update_cellular_panel
+
+
+class CellularStatusTests(unittest.TestCase):
+    def snapshot(self, *statuses):
+        return {"uptime_ms": 9000, "events": [
+            {"uptime_ms": i * 1000, "status": status}
+            for i, status in enumerate(statuses)]}
+
+    def test_ack_and_final_result_both_visible(self):
+        text, color, history = cellular_view(self.snapshot("WAITING_ACK", "ACCEPTED", "OK"))
+        self.assertEqual(color, "green")
+        self.assertEqual("SMS submitted successfully", text)
+        self.assertIn("Acknowledged", history)
+        self.assertIn("00:02", history)
+
+    def test_dry_run_is_not_reported_as_sent(self):
+        text, color, _ = cellular_view(self.snapshot("DRY_RUN"))
+        self.assertIn("no SMS sent", text)
+        self.assertNotEqual(color, "green")
+
+    def test_sim_network_and_timeout_messages(self):
+        for status in ("SIM_NOT_READY", "NOT_REGISTERED", "RESULT_TIMEOUT", "NO_PHONE"):
+            self.assertEqual(cellular_view(self.snapshot(status))[1], "red")
+        self.assertIn("missing, locked", cellular_view(self.snapshot("SIM_NOT_READY"))[0])
+
+    def test_repeated_snapshot_replaces_history_and_reboot_clears_it(self):
+        label, history = Mock(), Mock()
+        sample = self.snapshot("ACCEPTED", "DRY_RUN")
+        update_cellular_panel(label, history, sample)
+        update_cellular_panel(label, history, sample)
+        self.assertEqual(history.delete.call_count, 2)
+        self.assertEqual(history.insert.call_args_list[0], history.insert.call_args_list[1])
+        update_cellular_panel(label, history, self.snapshot("READY"))
+        self.assertNotIn("Dry run", history.insert.call_args.args[1])
+
+    def test_malformed_payloads_do_not_update_widgets(self):
+        bad = [None, {}, {"events": "bad"}, self.snapshot("BAD\nTOKEN"),
+               self.snapshot("X" * 48), self.snapshot(*(["OK"] * 9)),
+               {"uptime_ms": 0, "events": [{"uptime_ms": 1, "status": "OK"}]}]
+        for sample in bad:
+            label, history = Mock(), Mock()
+            with self.subTest(sample=sample), self.assertRaises(ValueError):
+                update_cellular_panel(label, history, sample)
+            label.configure.assert_not_called()
+
+    def test_unknown_error_is_readable(self):
+        text, color, _ = cellular_view(self.snapshot("FUTURE_ERROR"))
+        self.assertIn("FUTURE_ERROR", text)
+        self.assertEqual(color, "red")
 
 
 class RegressionTests(unittest.TestCase):

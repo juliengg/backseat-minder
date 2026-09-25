@@ -192,9 +192,13 @@ These pins are not available for general-purpose use on the Freenove ESP32-S3 WR
 
 The project source explicitly notes GPIO 4 is used by the camera in [main/temp_humidity_sensor.cpp](../../main/temp_humidity_sensor.cpp), and the board pinout confirms the camera-side GPIOs are reserved on the Freenove board.
 
-### Free GPIOs for later use
+### Cellular UART GPIOs
 
-GPIO 39 and 40 are unused by the current app, but share the onboard microSD bus. GPIO 38 is now assigned to the setup button and also shares that bus. Keep the microSD slot empty and do not enable SD-card support while these pins are repurposed.
+GPIO 39 (TX) and 40 (RX) are assigned to UART2 for the secondary cellular ESP32.
+Cross primary TX39 to secondary ESP32-WROOM-32 RX26 and primary RX40 to secondary TX27, with a
+common ground. They share the onboard microSD bus. GPIO 38 is assigned to the setup
+button and also shares that bus. Keep the primary's microSD slot empty and do not enable
+SD-card support while these pins are repurposed. See [cellular wiring](../../cell/README.md).
 
 GPIO 43/44 are UART0 TX/RX, used by the configured serial console and onboard USB-to-UART bridge. GPIO 45/46 are boot-strapping pins, so they are not unrestricted expansion pins.
 

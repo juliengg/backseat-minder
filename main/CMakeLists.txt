@@ -1,6 +1,6 @@
 idf_component_register(
-    SRCS "driver_presence.cpp" "tuned_face_detection.cpp" "thermal_camera.cpp" "mlx90640/MLX90640_API.c" "mmwave_sensor.cpp" "usb_camera_stream.cpp" "usb_telemetry.cpp" "app_main.cpp" "setup_mode.cpp" "temp_humidity_sensor.cpp"
-    INCLUDE_DIRS "."
+    SRCS "cellular_diagnostics.cpp" "boot_button.cpp" "cellular_link.cpp" "tuned_face_detection.cpp" "thermal_camera.cpp" "mlx90640/MLX90640_API.c" "mmwave_sensor.cpp" "usb_camera_stream.cpp" "usb_telemetry.cpp" "app_main.cpp" "setup_mode.cpp" "temp_humidity_sensor.cpp"
+    INCLUDE_DIRS "." "../shared"
     PRIV_REQUIRES
         modules
         esp_driver_gpio

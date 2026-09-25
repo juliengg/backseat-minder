@@ -7,7 +7,7 @@
 // development telemetry. Failure to connect USB never affects device behavior.
 void usb_telemetry_init();
 
-// Sends one newline-delimited JSON sample to a connected USB host.
+// Sends a BSMT JSON sensor sample and a BSMC cellular summary/history snapshot.
 // Values remain processed locally; this is development-only observability.
 void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool temperature_humidity_valid, bool face_detected,

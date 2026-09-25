@@ -17,6 +17,66 @@ import time
 import serial
 
 
+CELLULAR_STATUSES = {
+    "READY": ("Ready for a BOOT test (link not yet checked)", "gray"),
+    "WAITING_ACK": ("Waiting for secondary acknowledgement", "darkorange"),
+    "ACCEPTED": ("Acknowledged - checking modem / sending", "blue"),
+    "OK": ("SMS submitted successfully", "green"),
+    "DRY_RUN": ("Dry run complete - no SMS sent", "darkorange"),
+    "NO_PHONE": ("No valid phone number saved - open setup", "red"),
+    "SIM_NOT_READY": ("SIM missing, locked, or not ready", "red"),
+    "NOT_REGISTERED": ("Not registered on the cellular network", "red"),
+    "MODEM_UNAVAILABLE": ("Modem not responding - check power/wiring", "red"),
+    "BUSY": ("Busy - additional request rejected", "darkorange"),
+    "ACK_TIMEOUT": ("No acknowledgement - still waiting for result", "darkorange"),
+    "RESULT_TIMEOUT": ("Result timed out - SMS outcome unknown", "red"),
+    "SMS_OUTCOME_UNKNOWN": ("SMS outcome unknown - check before retrying", "red"),
+    "LINK_UNAVAILABLE": ("Primary cellular UART unavailable", "red"),
+    "UART_WRITE_FAILED": ("UART write failed - SMS outcome unknown", "red"),
+    "INVALID_REQUEST": ("Invalid phone number or message", "red"),
+    "INVALID_RESPONSE": ("Invalid response received from secondary", "red"),
+    "QUEUE_FAILED": ("Could not queue the SMS request", "red"),
+    "SMS_REJECTED": ("SMS rejected by modem", "red"),
+    "SMS_PROMPT": ("Modem did not accept the SMS recipient", "red"),
+    "SMS_SETUP": ("Modem SMS setup failed", "red"),
+    "MODEM_SETUP": ("Modem setup failed", "red"),
+    "MODEM_TIMEOUT": ("Modem timed out", "red"),
+}
+
+
+def cellular_view(sample: dict) -> tuple:
+    """Validate a BSMC snapshot and format its bounded event history."""
+    if not isinstance(sample, dict) or not isinstance(sample.get("events"), list):
+        raise ValueError("expected cellular events")
+    uptime = sample.get("uptime_ms")
+    if type(uptime) is not int or uptime < 0 or len(sample["events"]) > 8:
+        raise ValueError("invalid cellular snapshot")
+    history = []
+    text, color = "Waiting for a cellular event", "gray"
+    for event in sample["events"]:
+        if not isinstance(event, dict):
+            raise ValueError("invalid cellular event")
+        status, timestamp = event.get("status"), event.get("uptime_ms")
+        if (not isinstance(status, str) or not 1 <= len(status) <= 47
+                or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for c in status)
+                or type(timestamp) is not int or not 0 <= timestamp <= uptime):
+            raise ValueError("invalid cellular event fields")
+        text, color = CELLULAR_STATUSES.get(status, (f"Cellular error: {status}", "red"))
+        minutes, seconds = divmod(timestamp // 1000, 60)
+        history.append(f"{minutes:02d}:{seconds:02d}  {text}")
+    return text, color, "\n".join(history)
+
+
+def update_cellular_panel(label, history_widget, sample: dict) -> None:
+    text, color, history = cellular_view(sample)
+    label.configure(text=text, fg=color)
+    history_widget.configure(state="normal")
+    history_widget.delete("1.0", "end")
+    history_widget.insert("end", history)
+    history_widget.see("end")
+    history_widget.configure(state="disabled")
+
+
 def regression_line(times, values):
     """Return endpoints of a least-squares fit to the last 10 finite samples."""
     points = [(x, y) for x, y in zip(times, values)
@@ -144,6 +204,18 @@ def show_viewer(device: serial.Serial) -> int:
         status_label.grid(row=row, column=1, sticky="n", padx=(8, 0))
         detection_labels[name] = status_label
 
+    cellular_frame = tk.LabelFrame(values_frame, text="Cellular SMS")
+    cellular_frame.pack(fill="both", expand=True, pady=(8, 0))
+    cellular_label = tk.Label(cellular_frame, text="Waiting for cellular telemetry...",
+                              anchor="w", justify="left", wraplength=310, fg="gray")
+    cellular_label.pack(fill="x", padx=4, pady=4)
+    cellular_history = tk.Text(cellular_frame, height=4, width=42, wrap="word",
+                               state="disabled", font=("TkDefaultFont", 9))
+    cellular_scroll = tk.Scrollbar(cellular_frame, command=cellular_history.yview)
+    cellular_scroll.pack(side="right", fill="y")
+    cellular_history.configure(yscrollcommand=cellular_scroll.set)
+    cellular_history.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+
     plot_frame = tk.LabelFrame(lower_panel, text="Temperature and humidity — last 5 minutes")
     plot_frame.pack(side="left", fill="both", expand=True)
     trend_figure = Figure(figsize=(6.5, 2.8), dpi=100)
@@ -210,11 +282,16 @@ def show_viewer(device: serial.Serial) -> int:
     receive_buffer = bytearray()
     maximum_lengths = {
         b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000, b"BSMD": 5,
+        b"BSMC": 1024,
     }
     thermal_frame_count = 0
+    cellular_last_received = None
+    cellular_stale = False
+    cellular_rendered_events = None
 
     def poll_device() -> None:
-        nonlocal thermal_frame_count
+        nonlocal thermal_frame_count, cellular_last_received, cellular_stale
+        nonlocal cellular_rendered_events
         available = device.in_waiting
         if available:
             receive_buffer.extend(device.read(available))
@@ -241,6 +318,19 @@ def show_viewer(device: serial.Serial) -> int:
                 break
             payload = bytes(receive_buffer[8:8 + payload_length])
             del receive_buffer[:8 + payload_length]
+
+            if packet_type == b"BSMC":
+                try:
+                    sample = json.loads(payload.decode("utf-8"))
+                    cellular_view(sample)  # Validate even an unchanged snapshot.
+                    if sample["events"] != cellular_rendered_events or cellular_stale:
+                        update_cellular_panel(cellular_label, cellular_history, sample)
+                        cellular_rendered_events = sample["events"]
+                    cellular_last_received = time.monotonic()
+                    cellular_stale = False
+                except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+                    pass
+                continue
 
             if packet_type == b"BSMT":
                 try:
@@ -299,6 +389,10 @@ def show_viewer(device: serial.Serial) -> int:
             except Exception as error:
                 image_label.configure(text=f"Could not decode camera frame: {error}", image="")
 
+        if (cellular_last_received is not None and not cellular_stale
+                and time.monotonic() - cellular_last_received > 10):
+            cellular_label.configure(text="Cellular telemetry stale - showing last events", fg="gray")
+            cellular_stale = True
         root.after(10, poll_device)
 
     root.after(10, poll_device)
