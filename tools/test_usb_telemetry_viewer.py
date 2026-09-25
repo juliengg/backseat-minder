@@ -27,7 +27,7 @@ class CellularStatusTests(unittest.TestCase):
         self.assertNotEqual(color, "green")
 
     def test_sim_network_and_timeout_messages(self):
-        for status in ("SIM_NOT_READY", "NOT_REGISTERED", "RESULT_TIMEOUT", "NO_PHONE"):
+        for status in ("SIM_NOT_READY", "NOT_REGISTERED", "RESULT_TIMEOUT", "NO_PHONE", "NO_NAME", "INVALID_NAME"):
             self.assertEqual(cellular_view(self.snapshot(status))[1], "red")
         self.assertIn("missing, locked", cellular_view(self.snapshot("SIM_NOT_READY"))[0])
 

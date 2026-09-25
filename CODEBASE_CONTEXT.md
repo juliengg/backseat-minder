@@ -149,6 +149,7 @@ While waiting for portal confirmation, GPIO 2 blinks every 200 ms.
 Settings are stored in ESP32 nonvolatile storage (NVS):
 
 - Namespace: `bsm_cfg`
+- User name: `name` (portal limit 63 characters; storage reserves 252 UTF-8 bytes plus a terminator)
 - Primary phone number: `phone`
 - Emergency contact 1: `ec1`
 - Emergency contact 2: `ec2`
@@ -156,6 +157,10 @@ Settings are stored in ESP32 nonvolatile storage (NVS):
 - Emergency-alert toggle: `emerg_alerts`
 
 Each phone/contact field is capped at 31 characters plus a null terminator in memory. The setup page reloads saved values when it is reopened.
+
+The optional Name field is saved and reloaded with the contact configuration. Older
+devices without a saved `name` show an empty field. Saved form values are HTML-escaped
+when displayed, including names containing apostrophes, quotes or ampersands.
 
 The primary `phone` field is read for each manual SMS request through `setup_mode_get_phone_number()`. The helper strips common phone formatting and rejects missing or malformed values. Emergency contacts and the emergency-alert toggle remain stored only.
 
@@ -192,7 +197,7 @@ The camera and face-detection entry points (`register_camera`, `register_human_f
 
 - Setup Wi-Fi is intentionally open. Anyone within range while setup mode is active can view and submit the configuration form.
 - Setup logs no longer print the submitted form body or saved phone/contact values. Cellular logs redact the recipient.
-- Form values are inserted into HTML without HTML escaping. Phone-style values are the intended input, but untrusted input could still affect the rendered page on a later setup visit.
+- Saved name and phone/contact values are HTML-escaped before insertion into the portal form.
 - The emergency-alert wording in the UI is aspirational. There is no emergency-services integration in the current code.
 - Face detection alone is not a reliable determination of a child, passenger, vehicle state, or emergency. Any real safety product needs additional sensors, failure handling, user testing, privacy design, and appropriate regulatory/legal review.
 

@@ -24,6 +24,8 @@ CELLULAR_STATUSES = {
     "OK": ("SMS submitted successfully", "green"),
     "DRY_RUN": ("Dry run complete - no SMS sent", "darkorange"),
     "NO_PHONE": ("No valid phone number saved - open setup", "red"),
+    "NO_NAME": ("No name saved - open setup", "red"),
+    "INVALID_NAME": ("Name unsupported in SMS - update it in setup", "red"),
     "SIM_NOT_READY": ("SIM missing, locked, or not ready", "red"),
     "NOT_REGISTERED": ("Not registered on the cellular network", "red"),
     "MODEM_UNAVAILABLE": ("Modem not responding - check power/wiring", "red"),

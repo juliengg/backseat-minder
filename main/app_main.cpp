@@ -20,6 +20,7 @@
 #include "boot_button.h"
 #include "cellular_link.h"
 #include "cellular_diagnostics.h"
+#include "alert_message.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -119,7 +120,17 @@ extern "C" void app_main()
         if (boot_button_released()) {
             char phone[32];
             if (setup_mode_get_phone_number(phone, sizeof(phone))) {
-                cellular_link_send_sms(phone, "Testing");
+                char name[253];
+                char message[cellular::MAX_MESSAGE + 1];
+                if (!setup_mode_get_name(name, sizeof(name))) {
+                    ESP_LOGW("app_main", "No name configured; save a name in setup before sending SMS");
+                    cellular_diagnostics_record("NO_NAME");
+                } else if (!build_alert_message(name, message, sizeof(message))) {
+                    ESP_LOGW("app_main", "Saved name cannot be used in SMS; update the name in setup");
+                    cellular_diagnostics_record("INVALID_NAME");
+                } else {
+                    cellular_link_send_sms(phone, message);
+                }
             } else {
                 ESP_LOGW("app_main", "No valid phone number configured; save a number in setup mode before sending SMS");
                 cellular_diagnostics_record("NO_PHONE");

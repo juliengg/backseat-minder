@@ -21,6 +21,11 @@ def main():
     compiler = [sys.executable, '-m', 'ziglang', 'c++'] if args.zig else [os.environ.get('CXX', 'c++')]
     env = os.environ.copy()
     env['ZIG_GLOBAL_CACHE_DIR'] = str(output / 'zig-cache')
+    alert_executable = output / f'alert_message{".exe" if os.name == "nt" else ""}'
+    subprocess.run(compiler + ['-std=c++17', '-Wall', '-Wextra', '-Werror',
+        '-Imain', '-Ishared', 'tests/alert_message_test.cpp', '-o', str(alert_executable)],
+        cwd=ROOT, env=env, check=True)
+    subprocess.run([str(alert_executable)], cwd=ROOT, check=True)
     # Use the checked-in camera configuration in the primary pin-conflict guard.
     config_dir = output / 'config'
     config_dir.mkdir(exist_ok=True)

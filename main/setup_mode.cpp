@@ -1,5 +1,6 @@
 #include "setup_mode.h"
 #include "cellular_protocol.h"
+#include "alert_message.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -18,6 +19,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string>
 #include "esp_system.h"
 #include "esp_system.h"
 
@@ -30,6 +32,7 @@
 #define SETUP_IP        "192.168.4.1"
 
 #define NVS_NAMESPACE   "bsm_cfg"
+#define NVS_KEY_NAME    "name"
 #define NVS_KEY_PHONE   "phone"
 #define NVS_KEY_EC1     "ec1"
 #define NVS_KEY_EC2     "ec2"
@@ -37,6 +40,8 @@
 #define NVS_KEY_EMERG   "emerg_alerts"
 
 #define MAX_PHONE_LEN   32
+// Room for up to 63 four-byte UTF-8 characters plus the terminator.
+#define MAX_NAME_LEN    253
 
 static const char *TAG = "setup_mode";
 
@@ -51,6 +56,7 @@ static bool s_eventloop_inited = false;
 // ─── NVS Helpers ───────────────────────────────────────────────────────
 
 typedef struct {
+    char name[MAX_NAME_LEN];
     char phone[MAX_PHONE_LEN];
     char ec1[MAX_PHONE_LEN];
     char ec2[MAX_PHONE_LEN];
@@ -67,6 +73,9 @@ static void nvs_load_config(bsm_config_t *cfg)
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
 
     size_t len;
+
+    len = sizeof(cfg->name);
+    nvs_get_str(h, NVS_KEY_NAME, cfg->name, &len);
 
     len = sizeof(cfg->phone);
     nvs_get_str(h, NVS_KEY_PHONE, cfg->phone, &len);
@@ -87,26 +96,27 @@ static void nvs_load_config(bsm_config_t *cfg)
     nvs_close(h);
 }
 
-static void nvs_save_config(const bsm_config_t *cfg)
+static esp_err_t nvs_save_config(const bsm_config_t *cfg)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
-        return;
+        return err;
     }
 
-    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_str(h, NVS_KEY_PHONE, cfg->phone));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_str(h, NVS_KEY_EC1,   cfg->ec1));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_str(h, NVS_KEY_EC2,   cfg->ec2));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_str(h, NVS_KEY_EC3,   cfg->ec3));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_set_u8(h,  NVS_KEY_EMERG, cfg->emerg_alerts ? 1 : 0));
-
-    err = nvs_commit(h);
+    err = nvs_set_str(h, NVS_KEY_NAME, cfg->name);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_PHONE, cfg->phone);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_EC1, cfg->ec1);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_EC2, cfg->ec2);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_EC3, cfg->ec3);
+    if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_EMERG, cfg->emerg_alerts ? 1 : 0);
+    if (err == ESP_OK) err = nvs_commit(h);
     if (err != ESP_OK)
-        ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Saving configuration failed: %s", esp_err_to_name(err));
 
     nvs_close(h);
+    return err;
 }
 
 // ─── URL Decode ────────────────────────────────────────────────────────
@@ -161,7 +171,8 @@ static void form_get_field(const char *body, const char *key, char *out, size_t 
 
         if (field_len == key_len && strncmp(p, key, key_len) == 0) {
             size_t val_len = (size_t)(val_end - (eq + 1));
-            char raw[128] = {};
+            // A UTF-8 byte can occupy three bytes in a percent-encoded form.
+            char raw[3 * (MAX_NAME_LEN - 1) + 1] = {};
             if (val_len >= sizeof(raw)) val_len = sizeof(raw) - 1;
             strncpy(raw, eq + 1, val_len);
             raw[val_len] = '\0';
@@ -176,12 +187,28 @@ static void form_get_field(const char *body, const char *key, char *out, size_t 
 // ─── HTML ──────────────────────────────────────────────────────────────
 
 // We build the portal HTML dynamically to inject saved values.
-// Max size: ~5 KB stack-allocated in the handler.
-#define PORTAL_HTML_MAXLEN 5120
+// Heap-allocated in the handler; includes space for escaped saved values.
+#define PORTAL_HTML_MAXLEN 8192
 
-static void build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cfg)
+static std::string html_escape(const char *value)
 {
-    snprintf(buf, buf_size,
+    std::string escaped;
+    for (; *value; ++value) {
+        switch (*value) {
+        case '&': escaped += "&amp;"; break;
+        case '\'': escaped += "&#39;"; break;
+        case '"': escaped += "&quot;"; break;
+        case '<': escaped += "&lt;"; break;
+        case '>': escaped += "&gt;"; break;
+        default: escaped += *value; break;
+        }
+    }
+    return escaped;
+}
+
+static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cfg)
+{
+    const int length = snprintf(buf, buf_size,
         "<!DOCTYPE html><html><head>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<meta charset='UTF-8'>"
@@ -224,18 +251,18 @@ static void build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
         "}"
         ".field{margin-bottom:14px;}"
         ".field label{display:block;font-size:0.8rem;color:#aaa;margin-bottom:5px;font-weight:500;}"
-        ".field input[type=tel]{"
+        ".field input[type=tel],.field input[type=text]{"
           "width:100%%;background:#1a1a1a;border:1px solid var(--border);"
           "border-radius:var(--radius);padding:11px 14px;"
           "color:var(--text);font-family:'DM Sans',sans-serif;font-size:0.95rem;"
           "outline:none;transition:border-color 0.2s,box-shadow 0.2s;"
           "appearance:none;"
         "}"
-        ".field input[type=tel]:focus{"
+        ".field input[type=tel]:focus,.field input[type=text]:focus{"
           "border-color:var(--border-focus);"
           "box-shadow:0 0 0 3px rgba(78,204,163,0.12);"
         "}"
-        ".field input[type=tel]::placeholder{color:#3a3a3a;}"
+        ".field input::placeholder{color:#3a3a3a;}"
         ".optional-tag{"
           "font-family:'DM Mono',monospace;font-size:0.65rem;color:var(--muted);"
           "letter-spacing:0.05em;margin-left:6px;vertical-align:middle;"
@@ -269,7 +296,12 @@ static void build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
 
           "<form action='/confirm' method='POST'>"
 
-          "<p class='section-label'>Your number</p>"
+          "<p class='section-label'>Your details</p>"
+          "<div class='field'>"
+            "<label for='name'>Name <span style='color:#ff6b6b'>*</span></label>"
+            "<input type='text' id='name' name='name' autocomplete='name' maxlength='63' required placeholder='Your name' value='%s'>"
+            "<small>Use letters without accents. Spaces, apostrophes and hyphens are welcome.</small>"
+          "</div>"
           "<div class='field'>"
             "<label for='phone'>Mobile number <span style='color:#ff6b6b'>*</span></label>"
             "<input type='tel' id='phone' name='phone' placeholder='+1 555 000 0000' value='%s'>"
@@ -308,12 +340,14 @@ static void build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
           "</form>"
         "</div>"
         "</body></html>",
-        cfg->phone,
-        cfg->ec1,
-        cfg->ec2,
-        cfg->ec3,
+        html_escape(cfg->name).c_str(),
+        html_escape(cfg->phone).c_str(),
+        html_escape(cfg->ec1).c_str(),
+        html_escape(cfg->ec2).c_str(),
+        html_escape(cfg->ec3).c_str(),
         cfg->emerg_alerts ? "checked" : ""
     );
+    return length >= 0 && static_cast<size_t>(length) < buf_size;
 }
 
 static const char *CONFIRM_HTML =
@@ -393,7 +427,11 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    build_portal_html(html, PORTAL_HTML_MAXLEN, &cfg);
+    if (!build_portal_html(html, PORTAL_HTML_MAXLEN, &cfg)) {
+        free(html);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -408,19 +446,14 @@ static esp_err_t confirm_post_handler(httpd_req_t *req)
     // Read POST body
     int total_len = req->content_len;
     if (total_len <= 0 || total_len > 2048) {
-        // Nothing useful, still confirm
-        setup_confirmed = true;
-        httpd_resp_set_type(req, "text/html");
-        httpd_resp_send(req, CONFIRM_HTML, HTTPD_RESP_USE_STRLEN);
-        return ESP_OK;
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Please submit the setup form with a name.");
+        return ESP_FAIL;
     }
 
     char *body = (char *)malloc(total_len + 1);
     if (!body) {
-        setup_confirmed = true;
-        httpd_resp_set_type(req, "text/html");
-        httpd_resp_send(req, CONFIRM_HTML, HTTPD_RESP_USE_STRLEN);
-        return ESP_OK;
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
     }
 
     int received = 0;
@@ -430,11 +463,16 @@ static esp_err_t confirm_post_handler(httpd_req_t *req)
         received += ret;
     }
     body[received] = '\0';
-
+    if (received != total_len || strlen(body) != static_cast<size_t>(total_len)) {
+        free(body);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Incomplete setup form. Please try again.");
+        return ESP_FAIL;
+    }
 
     bsm_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 
+    form_get_field(body, "name", cfg.name, sizeof(cfg.name));
     form_get_field(body, "phone", cfg.phone, sizeof(cfg.phone));
     form_get_field(body, "ec1",   cfg.ec1,   sizeof(cfg.ec1));
     form_get_field(body, "ec2",   cfg.ec2,   sizeof(cfg.ec2));
@@ -446,7 +484,22 @@ static esp_err_t confirm_post_handler(httpd_req_t *req)
 
     free(body);
 
-    nvs_save_config(&cfg);
+    char alert[cellular::MAX_MESSAGE + 1];
+    if (!build_alert_message(cfg.name, alert, sizeof(alert))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/html");
+        httpd_resp_send(req,
+            "<!DOCTYPE html><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<h1>Please enter your name</h1>"
+            "<p>A name is required. Use up to 63 characters without accents, "
+            "and avoid special symbols. Spaces, apostrophes and hyphens are allowed.</p>"
+            "<p><a href='/'>Return to setup</a></p>", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+    if (nvs_save_config(&cfg) != ESP_OK) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
     ESP_LOGI(TAG, "Contact configuration saved");
 
     httpd_resp_set_type(req, "text/html");
@@ -570,6 +623,22 @@ static void start_ap(void)
 }
 
 // ─── PUBLIC API ────────────────────────────────────────────────
+
+bool setup_mode_get_name(char *buffer, size_t capacity)
+{
+    if (!buffer || capacity == 0) return false;
+    buffer[0] = '\0';
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
+    size_t length = capacity;
+    const esp_err_t result = nvs_get_str(handle, NVS_KEY_NAME, buffer, &length);
+    nvs_close(handle);
+    if (result != ESP_OK || !buffer[0]) {
+        buffer[0] = '\0';
+        return false;
+    }
+    return true;
+}
 
 bool setup_mode_get_phone_number(char *buffer, size_t capacity)
 {
