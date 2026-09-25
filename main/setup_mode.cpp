@@ -20,7 +20,9 @@
 #include "esp_system.h"
 #include "esp_system.h"
 
-#define BUTTON_GPIO     GPIO_NUM_0
+// External normally-open button between GPIO 38 and GND (internal pull-up).
+// Freenove shares GPIO 38 with microSD CMD: keep the SD slot empty.
+#define BUTTON_GPIO     GPIO_NUM_38
 #define LED_GPIO        GPIO_NUM_2
 #define WIFI_SSID       "Backseat Minder"
 #define WIFI_PASS       ""

@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "tuned_face_detection.cpp" "thermal_camera.cpp" "mlx90640/MLX90640_API.c" "mmwave_sensor.cpp" "usb_camera_stream.cpp" "usb_telemetry.cpp" "app_main.cpp" "setup_mode.cpp" "temp_humidity_sensor.cpp"
+    SRCS "driver_presence.cpp" "tuned_face_detection.cpp" "thermal_camera.cpp" "mlx90640/MLX90640_API.c" "mmwave_sensor.cpp" "usb_camera_stream.cpp" "usb_telemetry.cpp" "app_main.cpp" "setup_mode.cpp" "temp_humidity_sensor.cpp"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         modules
@@ -9,6 +9,7 @@ idf_component_register(
         esp_driver_uart
         esp_driver_usb_serial_jtag
         esp_event
+        esp_hw_support
         esp_http_server
         esp_netif
         esp_rom

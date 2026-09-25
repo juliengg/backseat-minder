@@ -1,0 +1,38 @@
+Module,Connector,Pin,Name,Net,Notes
+ESP32-S3 Header,JP1,1,3V3,3V3,Main logic rail
+ESP32-S3 Header,JP1,2,GND,GND,Ground return
+ESP32-S3 Header,JP1,3,GPIO38,GPIO38,Setup button input (microSD slot must be empty)
+ESP32-S3 Header,JP1,4,GPIO1,GPIO1,DHT22 data
+ESP32-S3 Header,JP1,5,GPIO2,GPIO2,Status LED output
+ESP32-S3 Header,JP1,6,GPIO19,USB_D_MINUS,USB OTG D-
+ESP32-S3 Header,JP1,7,GPIO20,USB_D_PLUS,USB OTG D+
+ESP32-S3 Header,JP1,8,GPIO21,I2C_SDA,MLX90640 SDA
+ESP32-S3 Header,JP1,9,GPIO41,MMWAVE_RX,UART1 RX
+ESP32-S3 Header,JP1,10,GPIO42,MMWAVE_TX,UART1 TX
+ESP32-S3 Header,JP1,11,GPIO47,I2C_SCL,MLX90640 SCL
+ESP32-S3 Header,JP1,12,GPIO48,NEOPIXEL,Optional RGB LED
+DHT22,JP2,1,3V3,3V3,Sensor supply
+DHT22,JP2,2,DATA,GPIO1,Pull-up 4.7k-10k to 3V3
+DHT22,JP2,3,GND,GND,Ground
+mmWave Sensor,JP3,1,5V,5V_IN,Optional power if needed
+mmWave Sensor,JP3,2,TX,MMWAVE_RX,UART to ESP32 RX
+mmWave Sensor,JP3,3,RX,MMWAVE_TX,UART from ESP32 TX
+mmWave Sensor,JP3,4,GND,GND,Ground
+mmWave Sensor,JP3,5,3V3,3V3,Logic rail if module uses 3.3V
+MLX90640,JP4,1,3V3,3V3,Thermal camera supply
+MLX90640,JP4,2,SDA,I2C_SDA,Data line
+MLX90640,JP4,3,SCL,I2C_SCL,Clock line
+MLX90640,JP4,4,GND,GND,Ground
+LED,JP5,1,LED_OUT,GPIO2,Status LED
+LED,JP5,2,GND,GND,Return path
+Button,JP6,1,SW_IN,GPIO38,Setup button
+Button,JP6,2,GND,GND,Ground
+USB,JP7,1,VBUS,5V_IN,Power input
+USB,JP7,2,D-,USB_D_MINUS,USB differential pair
+USB,JP7,3,D+,USB_D_PLUS,USB differential pair
+USB,JP7,4,GND,GND,Ground
+Power Input,JP8,1,5V,5V_IN,Board input
+Power Input,JP8,2,GND,GND,Ground
+Regulator,REG1,IN,5V,5V_IN,Regulator input
+Regulator,REG1,OUT,3V3,3V3,Regulator output
+Regulator,REG1,GND,GND,GND,Ground return

@@ -31,9 +31,10 @@ idf.py -p COM4 flash monitor
 | File | Role |
 | --- | --- |
 | `main/app_main.cpp` | Firmware entry point; initializes setup support, camera/face detection, and the main LED loop. |
+| `main/driver_presence.cpp` | BOOT-button placeholder for driver presence, debounce, and deep-sleep wake configuration. |
 | `main/setup_mode.h` | Public interface for setup mode. |
 | `main/setup_mode.cpp` | Captive portal, Wi-Fi access point, DNS redirection, form parsing, and NVS configuration storage. |
-| `main/CMakeLists.txt` | Registers the two application source files. |
+| `main/CMakeLists.txt` | Registers application source files and component dependencies. |
 | `dependencies.lock` | Pinned ESP-IDF and Espressif component versions. |
 | `partitions.csv` | Flash partition layout. |
 | `sdkconfig` | Generated ESP-IDF configuration; treat as platform/build configuration rather than primary application logic. |
@@ -47,8 +48,9 @@ idf.py -p COM4 flash monitor
 3. GPIO 2 is configured as the indicator LED output.
 4. A FreeRTOS queue is created for camera frames.
 5. The ESP-WHO camera pipeline is registered for RGB565/QVGA frames and face detection.
-6. Every 100 ms, the application:
-   - checks whether GPIO 0 is being held, and enters setup mode if so;
+6. The application polls with a 20 ms delay between iterations:
+   - checks the BOOT-button driver-presence placeholder and sleeps when present;
+   - checks whether GPIO 38 is being held, and enters setup mode if so;
    - every three seconds, updates in-memory `temperature_f` and `humidity_percent`
      values from an AM2302/DHT22 sensor on GPIO 1;
    - reads `get_face_detected()` from the face-detection component;
@@ -79,7 +81,7 @@ On the Freenove ESP32-S3 WROOM board, use the connector labeled **USB-OTG**. It 
 wired directly to the ESP32-S3's USB D- (GPIO 19) and D+ (GPIO 20) lines. Do not use
 the **USB-UART** connector for this dedicated telemetry stream; that connector is
 instead attached to UART0 through the board's USB-to-UART chip. Windows should expose
-the USB-OTG connection as a COM port after the firmware is flashed.
+the USB-OTG connection as a COM port after the firmware is flashed (COM3).
 
 For a development camera preview, install Pillow in addition to `pyserial`, then run:
 
@@ -92,9 +94,38 @@ The preview is JPEG-compressed and limited to one frame per second to avoid maki
 debugging alter normal face-detection behavior. It uses the detected-frame output, so
 face boxes may be visible in the preview.
 
+### Driver presence and deep sleep
+
+- Power-on/reset starts **driver absent**, with monitoring active.
+- Press and release the onboard **BOOT button (GPIO 0)** to mark the driver
+  **present** and enter ESP32 deep sleep. Both press and release are debounced
+  for 50 ms; sleep waits for release to avoid waking from the same press.
+- Press BOOT again to wake through active-low RTC EXT0 and mark the driver
+  **absent**. Deep-sleep wake restarts the application and initializes monitoring
+  again. A held wake button is ignored until released, preventing a second toggle.
+- The indicator output and NeoPixel data output are held low during sleep.
+  Processing and USB telemetry stop; the USB connection may need reconnecting
+  in the host viewer after wake. External sensors and board power LEDs can still
+  consume power: this firmware does not switch their supply rails.
+- The separate GPIO 38 setup button works while awake. During a blocking setup
+  session BOOT is not polled; wake with BOOT before using setup.
+- `driver_presence_is_present()` isolates the placeholder input. Integration of
+  a real detector must also replace the BOOT wake source with a signal that can
+  wake the ESP32 when the driver leaves; software is stopped during deep sleep.
+
+Hardware verification after flashing:
+
+1. Confirm normal camera/sensor telemetry and indicator behavior on startup.
+2. Press and release BOOT; confirm the driver-present log, indicator off, stopped
+   telemetry, and reduced supply current with a meter.
+3. Press BOOT to wake; confirm the driver-absent log and resumed monitoring after
+   initialization. Hold BOOT during wake, then release: it must stay awake.
+4. Repeat several sleep/wake cycles, including holding BOOT before sleeping
+   (sleep must wait for release). Confirm GPIO 38 still opens setup while awake.
+
 ### Setup mode
 
-Holding the button on GPIO 0 enters a blocking setup session:
+Holding the external setup button on GPIO 38 enters a blocking setup session:
 
 1. The device starts an **open** Wi-Fi access point:
    - SSID: `Backseat Minder`
@@ -125,7 +156,8 @@ These fields are currently **stored only**. No application logic consumes them a
 ## Hardware Assumptions
 
 - ESP32-S3 device with a supported camera, likely aligned with ESP-WHO ESP32-S3-EYE support.
-- GPIO 0: active-low setup button, using the internal pull-up.
+- GPIO 0: active-low onboard BOOT button for driver presence and deep-sleep wake.
+- GPIO 38: active-low external setup button, using the internal pull-up.
 - GPIO 2: external/status LED output used for face-detection status and setup-mode blinking.
 - GPIO 1: AM2302/DHT22 single-wire temperature and relative-humidity sensor data pin.
 - GPIO 48: onboard WS2812/NeoPixel data pin, explicitly held low.

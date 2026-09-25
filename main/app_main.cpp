@@ -17,6 +17,7 @@
 
 #include "who_camera.h"
 #include "driver/gpio.h"
+#include "driver_presence.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -73,6 +74,7 @@ void thermal_stream_start()
 extern "C" void app_main()
 {
     setup_mode_init();  // handles NVS, button GPIO
+    driver_presence_init();
 
     // Suppress the onboard NeoPixel (GPIO 48) by driving it low.
     // Without this the camera driver leaves the data line floating,
@@ -84,6 +86,11 @@ extern "C" void app_main()
     gpio_reset_pin(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_GPIO, 0);
+
+    // Restore GPIO ownership after the output holds used during deep sleep.
+    gpio_hold_dis(LED_GPIO);
+    gpio_hold_dis(NEOPIXEL_GPIO);
+    gpio_deep_sleep_hold_dis();
 
     temp_humidity_sensor_init();
     mmwave_sensor_init();
@@ -107,12 +114,21 @@ extern "C" void app_main()
 
     while (true)
     {
+        if (driver_presence_is_present()) {
+            gpio_set_level(LED_GPIO, 0);
+            gpio_set_level(NEOPIXEL_GPIO, 0);
+            gpio_hold_en(LED_GPIO);
+            gpio_hold_en(NEOPIXEL_GPIO);
+            gpio_deep_sleep_hold_en();
+            driver_presence_sleep();
+        }
+
         if (setup_mode_button_pressed())
             enter_setup_mode();  // blocks until confirmed
 
         // ESP-WHO exposes face detection as a one-shot flag. Preserve any
         // detection until the next telemetry sample instead of losing it
-        // between the main loop's 100 ms polls and telemetry's 3 second polls.
+        // between the main loop's polls and telemetry's 3 second polls.
         face_detected_since_telemetry |= get_tuned_face_detected();
         const bool mmwave_presence_detected = mmwave_sensor_presence_detected();
         const bool thermal_heat_detected = thermal_camera_heat_trace_detected();
@@ -141,6 +157,6 @@ extern "C" void app_main()
             face_detected_since_telemetry = false;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(20)); // Keep the BOOT button responsive.
     }
 }
