@@ -1,0 +1,2 @@
+# Main performs sensor reads, NVS access, portal setup and formatted telemetry.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

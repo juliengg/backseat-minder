@@ -5,7 +5,7 @@ This PlatformIO/Arduino firmware runs on an ESP32-WROOM-32 development board and
 TEL0161/SIM7600G modem. It receives the recipient and message with every command;
 there is no hardcoded recipient, secondary NVS storage, or location lookup.
 
-The primary sends exactly `Testing` after a debounced BOOT press **and release**.
+The primary sends `ALERT: {name}'s Backseat Minder device has detected an unattended passenger in their vehicle.` after a debounced BOOT press **and release**, using the required name saved in setup. The `Testing` commands below remain examples for bench testing the secondary directly.
 Monitoring stays active. The secondary's BOOT button is only used for flashing.
 
 ## Wiring

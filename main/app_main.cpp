@@ -114,6 +114,7 @@ extern "C" void app_main()
     bool temperature_humidity_valid = false;
     bool face_detected_since_telemetry = false;
     TickType_t last_sensor_read = 0;
+    TickType_t last_stack_report = xTaskGetTickCount();
 
     while (true)
     {
@@ -169,6 +170,13 @@ extern "C" void app_main()
                                human_presence_detected);
 
             face_detected_since_telemetry = false;
+        }
+
+        if (xTaskGetTickCount() - last_stack_report >= pdMS_TO_TICKS(60000)) {
+            // ESP-IDF reports the minimum unused task stack in bytes.
+            ESP_LOGI("app_main", "Main task minimum free stack: %u bytes",
+                     static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+            last_stack_report = xTaskGetTickCount();
         }
 
         vTaskDelay(pdMS_TO_TICKS(20)); // Keep the BOOT button responsive.

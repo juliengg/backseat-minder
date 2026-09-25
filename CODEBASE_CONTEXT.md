@@ -53,7 +53,7 @@ idf.py -p COM4 flash monitor
 4. A FreeRTOS queue is created for camera frames.
 5. The ESP-WHO camera pipeline is registered for RGB565/QVGA frames and face detection.
 6. The application polls with a 20 ms delay between iterations:
-   - checks BOOT press/release and queues `Testing` to the saved primary number;
+   - checks BOOT press/release and queues the named alert to the saved primary number;
    - checks whether GPIO 38 is being held, and enters setup mode if so;
    - every three seconds, updates in-memory `temperature_f` and `humidity_percent`
      values from an AM2302/DHT22 sensor on GPIO 1;
@@ -61,6 +61,12 @@ idf.py -p COM4 flash monitor
    - sets GPIO 2 high when any of those signals indicates presence and low otherwise.
 
 These presence signals drive the LED and USB telemetry; they do not automatically trigger SMS.
+
+The main task has an 8192-byte stack (`sdkconfig` and `sdkconfig.defaults`). Its
+minimum free stack is logged every 60 seconds in normal mode. Telemetry formatting
+buffers use static storage protected by the USB write mutex, avoiding 1408 bytes
+of stack use on each sensor/diagnostic send. This addresses the main-task stack
+overflow observed with the former 3584-byte allocation.
 
 ### Optional USB development telemetry
 
@@ -105,7 +111,7 @@ both press and release have been stable for 50 ms; a startup-held button is igno
 until released. Driver-presence toggling and deep sleep have been removed.
 
 The primary reads and normalizes only `bsm_cfg/phone`, then queues
-`SEND_SMS|number|Testing` through UART2 TX39/RX40 at 115200 8N1. A worker logs the
+`SEND_SMS|number|message` through UART2 TX39/RX40 at 115200 8N1. A worker logs the
 secondary acknowledgement and final result without blocking monitoring. Another
 press while active logs `BUSY`. There are no automatic retries; after a 3-second
 ACK timeout the link stays busy until a result or the 110-second overall deadline.
@@ -158,9 +164,14 @@ Settings are stored in ESP32 nonvolatile storage (NVS):
 
 Each phone/contact field is capped at 31 characters plus a null terminator in memory. The setup page reloads saved values when it is reopened.
 
-The optional Name field is saved and reloaded with the contact configuration. Older
-devices without a saved `name` show an empty field. Saved form values are HTML-escaped
+The required Name field is saved and reloaded with the contact configuration. Setup
+rejects blank names and names that cannot fit the secondary's ASCII SMS protocol.
+Older devices without a saved `name` must complete setup before sending an alert.
+Saved form values are HTML-escaped
 when displayed, including names containing apostrophes, quotes or ampersands.
+
+The manual BOOT alert reads the saved name and sends:
+`ALERT: {name}'s Backseat Minder device has detected an unattended passenger in their vehicle.`
 
 The primary `phone` field is read for each manual SMS request through `setup_mode_get_phone_number()`. The helper strips common phone formatting and rejects missing or malformed values. Emergency contacts and the emergency-alert toggle remain stored only.
 

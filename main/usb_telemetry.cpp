@@ -85,7 +85,9 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
         return;
     }
 
-    char message[384];
+    // Shared scratch storage is protected by s_write_mutex for the entire send.
+    // Keep these buffers off the caller's stack (normally the main task).
+    static char message[384];
     const int length = snprintf(
         message, sizeof(message),
         "{\"uptime_ms\":%lld,\"face_detected\":%s,"
@@ -108,7 +110,7 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
     }
     // Repeat the recent history with each sensor sample so dropped USB packets
     // or opening the viewer after a result do not lose the summary.
-    char cellular[1024];
+    static char cellular[1024];
     const size_t cellular_length = cellular_diagnostics_json(cellular, sizeof(cellular));
     if (cellular_length) {
         send_packet("BSMC", reinterpret_cast<const uint8_t *>(cellular), cellular_length);

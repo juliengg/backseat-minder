@@ -1,5 +1,11 @@
 # Cellular ESP32 Integration Guide
 
+Current firmware update: setup requires a name and saves it in NVS. A primary BOOT
+press/release now sends `ALERT: {name}'s Backseat Minder device has detected an unattended passenger in their vehicle.`
+The `Testing` examples below describe the original prototype and can still be used
+to exercise the secondary directly. Existing devices without a saved name must
+complete setup before sending the named alert. Names must fit the ASCII SMS protocol.
+
 ## Goal
 
 Split cellular SMS handling across two ESP32 boards:
