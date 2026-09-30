@@ -20,7 +20,8 @@
 #include "boot_button.h"
 #include "cellular_link.h"
 #include "cellular_diagnostics.h"
-#include "alert_message.h"
+#include "cellular_protocol.h"
+#include <cstdio>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -121,16 +122,22 @@ extern "C" void app_main()
         if (boot_button_released()) {
             char phone[32];
             if (setup_mode_get_phone_number(phone, sizeof(phone))) {
-                char name[253];
+                char name[64];
                 char message[cellular::MAX_MESSAGE + 1];
                 if (!setup_mode_get_name(name, sizeof(name))) {
-                    ESP_LOGW("app_main", "No name configured; save a name in setup before sending SMS");
+                    ESP_LOGW("app_main", "Save a valid name in setup before sending the BOOT test");
                     cellular_diagnostics_record("NO_NAME");
-                } else if (!build_alert_message(name, message, sizeof(message))) {
-                    ESP_LOGW("app_main", "Saved name cannot be used in SMS; update the name in setup");
-                    cellular_diagnostics_record("INVALID_NAME");
                 } else {
-                    cellular_link_send_sms(phone, message);
+                    const int length = snprintf(message, sizeof(message),
+                        "Backseat Minder test for %s. This checks delivery of passenger alerts. No action is needed.",
+                        name);
+                    if (length < 0 || static_cast<size_t>(length) >= sizeof(message) ||
+                        !cellular::valid_message(message)) {
+                        ESP_LOGW("app_main", "Saved name cannot be used in the BOOT test; update it in setup");
+                        cellular_diagnostics_record("INVALID_NAME");
+                    } else {
+                        cellular_link_send_sms(phone, message);
+                    }
                 }
             } else {
                 ESP_LOGW("app_main", "No valid phone number configured; save a number in setup mode before sending SMS");
