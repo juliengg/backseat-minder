@@ -26,6 +26,12 @@ def main():
         '-Imain', '-Ishared', 'tests/alert_message_test.cpp', '-o', str(alert_executable)],
         cwd=ROOT, env=env, check=True)
     subprocess.run([str(alert_executable)], cwd=ROOT, check=True)
+    usb_executable = output / f'usb_sms_control{".exe" if os.name == "nt" else ""}'
+    subprocess.run(compiler + ['-std=c++17', '-Wall', '-Wextra', '-Werror',
+        '-Itests/stubs', '-Imain', '-Ishared', 'tests/usb_sms_control_test.cpp',
+        'main/cellular_diagnostics.cpp', '-o', str(usb_executable)],
+        cwd=ROOT, env=env, check=True)
+    subprocess.run([str(usb_executable)], cwd=ROOT, check=True)
     # Use the checked-in camera configuration in the primary pin-conflict guard.
     config_dir = output / 'config'
     config_dir.mkdir(exist_ok=True)
@@ -39,7 +45,7 @@ def main():
         executable = output / f'cellular_{real_sms}{".exe" if os.name == "nt" else ""}'
         command = compiler + ['-std=c++17', '-Wall', '-Wextra', '-Werror', '-O0',
             f'-DBSM_SEND_REAL_SMS={real_sms}', '-Itests/stubs', '-Ishared', '-Imain',
-            '-Icell/include', 'tests/cellular_host_test.cpp', 'main/boot_button.cpp',
+            '-Isecondary_firmware/include', 'tests/cellular_host_test.cpp', 'main/boot_button.cpp',
             '-o', str(executable)]
         subprocess.run(command, cwd=ROOT, env=env, check=True)
         subprocess.run([str(executable)], cwd=ROOT, check=True)

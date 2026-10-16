@@ -7,8 +7,13 @@
 // development telemetry. Failure to connect USB never affects device behavior.
 void usb_telemetry_init();
 
+// Nonblocking, bounded USB command poll. Only SEND_SMS followed by LF (or CRLF)
+// requests the saved-contact test; repeated commands in one read are coalesced.
+// Call from the main task only. No command supplies a phone number or SMS body.
+bool usb_telemetry_sms_requested();
+
 // Sends a BSMT JSON sensor sample and a BSMC cellular summary/history snapshot.
-// Values remain processed locally; this is development-only observability.
+// Includes dashboard SMS control availability, request count and busy state.
 void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool temperature_humidity_valid, bool face_detected,
                         bool mmwave_presence_detected, bool thermal_heat_detected,

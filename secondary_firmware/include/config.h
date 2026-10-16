@@ -12,6 +12,15 @@ constexpr int MODEM_TX_PIN = 19;
 constexpr int PRIMARY_RX_PIN = 26;
 constexpr int PRIMARY_TX_PIN = 27;
 
+// Secondary MCP2515 wiring confirmed by the user: SCK25, INT32.
+// Default SPI pins 18/19 belong to the modem.
+constexpr int CAN_SCK_PIN = 25;
+constexpr int CAN_MOSI_PIN = 23;
+constexpr int CAN_MISO_PIN = 22;
+constexpr int CAN_CS_PIN = 21;
+constexpr int CAN_INT_PIN = 32;
+constexpr uint32_t CAN_SPI_CLOCK_HZ = 1000000;
+
 constexpr uint32_t DEBUG_BAUD = 115200;
 constexpr uint32_t MODEM_BAUD = 115200;
 constexpr uint32_t MODEM_BOOT_WAIT_MS = 8000;

@@ -18,7 +18,23 @@ import serial
 
 
 CELLULAR_STATUSES = {
-    "READY": ("Ready for a BOOT test (link not yet checked)", "gray"),
+    "RX_READY": ("Incoming SMS reception ready", "green"),
+    "RX_ERROR": ("Could not configure/read incoming SMS - check secondary logs", "red"),
+    "RX_QUEUE_FULL": ("Incoming SMS queue full - some texts were not displayed", "red"),
+    "READY": ("SMS/horn UART ready (secondary not yet checked)", "gray"),
+    "HORN_WAITING_ACK": ("Horn: waiting for secondary acknowledgement", "darkorange"),
+    "HORN_ACCEPTED": ("Horn: secondary running chirp sequence", "blue"),
+    "HORN_OK": ("Horn: CAN sequence submitted", "green"),
+    "HORN_BUSY": ("Horn rejected: SMS or horn already in progress", "darkorange"),
+    "HORN_CAN_UNAVAILABLE": ("Horn: MCP2515 unavailable - check secondary logs", "red"),
+    "HORN_CAN_SEND_FAILED": ("Horn: CAN send failed - restart secondary after checking bus", "red"),
+    "HORN_CAN_OFF_FAILED": ("Horn: OFF frame failed - check vehicle and secondary logs", "red"),
+    "HORN_ACK_TIMEOUT": ("Horn: no acknowledgement - waiting for result", "darkorange"),
+    "HORN_RESULT_TIMEOUT": ("Horn: result timed out - outcome unknown", "red"),
+    "HORN_LINK_UNAVAILABLE": ("Horn: primary UART unavailable", "red"),
+    "HORN_UART_WRITE_FAILED": ("Horn: UART write failed - outcome unknown", "red"),
+    "HORN_QUEUE_FAILED": ("Horn: could not queue request", "red"),
+    "HORN_INVALID_RESPONSE": ("Horn: invalid response from secondary", "red"),
     "WAITING_ACK": ("Waiting for secondary acknowledgement", "darkorange"),
     "ACCEPTED": ("Acknowledged - checking modem / sending", "blue"),
     "OK": ("SMS submitted successfully", "green"),
@@ -46,6 +62,69 @@ CELLULAR_STATUSES = {
 }
 
 
+class SmsControl:
+    """Send one deliberate USB request; wait for firmware receipt, never retry."""
+
+    def __init__(self, device):
+        self.device = device
+        self.last_received = None
+        self.requests = None
+        self.uptime = None
+        self.supported = False
+        self.busy = False
+        self.pending_since = None
+        self.message = "Waiting for SMS controls from device..."
+
+    def observe(self, sample, now):
+        self.supported = (sample.get("sms_control") is True
+                          and type(sample.get("sms_busy")) is bool
+                          and type(sample.get("sms_requests")) is int
+                          and 0 <= sample["sms_requests"] <= 0xFFFFFFFF)
+        self.last_received = now
+        if not self.supported:
+            return
+        if self.pending_since is not None:
+            if self.uptime is not None and sample["uptime_ms"] < self.uptime:
+                self.message = "Device restarted - SMS outcome unknown; check before retrying."
+                self.pending_since = None
+            elif sample["sms_requests"] != self.requests:
+                self.message = "Request received by device - see cellular status below."
+                self.pending_since = None
+        elif self.requests is None:
+            self.message = "Uses the name and phone number saved in device setup."
+        self.requests = sample["sms_requests"]
+        self.uptime = sample["uptime_ms"]
+        self.busy = sample["sms_busy"]
+
+    def refresh(self, now):
+        if self.pending_since is not None and now - self.pending_since > 10:
+            self.pending_since = None
+            self.message = "No command confirmation - SMS outcome unknown; check before retrying."
+        if self.last_received is None or now - self.last_received > 10:
+            return False, "Waiting for fresh cellular telemetry..."
+        if not self.supported:
+            return False, "Update primary firmware to enable dashboard SMS."
+        if self.pending_since is not None:
+            return False, self.message
+        if self.busy:
+            return False, "SMS or horn in progress - waiting for the result."
+        return True, self.message
+
+    def send(self, now):
+        if not self.refresh(now)[0]:
+            return
+        # Latch before writing so repeated clicks cannot submit another request.
+        self.pending_since = now
+        self.message = "Command sent - waiting for device confirmation..."
+        try:
+            command = b"SEND_SMS\n"
+            if self.device.write(command) != len(command):
+                raise OSError("incomplete USB write")
+        except (serial.SerialException, OSError):
+            # A failed/partial write may still have reached the device. Do not retry.
+            self.message = "USB write failed - SMS outcome unknown; check before retrying."
+
+
 def cellular_view(sample: dict) -> tuple:
     """Validate a BSMC snapshot and format its bounded event history."""
     if not isinstance(sample, dict) or not isinstance(sample.get("events"), list):
@@ -63,9 +142,22 @@ def cellular_view(sample: dict) -> tuple:
                 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for c in status)
                 or type(timestamp) is not int or not 0 <= timestamp <= uptime):
             raise ValueError("invalid cellular event fields")
-        text, color = CELLULAR_STATUSES.get(status, (f"Cellular error: {status}", "red"))
+        if status == "SMS_RECEIVED":
+            sender, message = event.get("sender"), event.get("message")
+            if (not isinstance(sender, str) or not 1 <= len(sender) <= 31
+                    or not sender.lstrip("+").isascii()
+                    or not sender.lstrip("+").isdigit() or "+" in sender[1:]
+                    or not isinstance(message, str) or len(message.encode("utf-8")) > 480
+                    or any((ord(c) < 32 and c not in "\n\r\t") or ord(c) == 127 for c in message)):
+                raise ValueError("invalid received SMS")
+            text, color = f"Received SMS from {sender}", "green"
+        else:
+            text, color = CELLULAR_STATUSES.get(status, (f"Cellular error: {status}", "red"))
         minutes, seconds = divmod(timestamp // 1000, 60)
         history.append(f"{minutes:02d}:{seconds:02d}  {text}")
+        if status == "SMS_RECEIVED":
+            body = message.replace("\r\n", "\n").replace("\r", "\n")
+            history.extend(f"    {line}" for line in body.split("\n"))
     return text, color, "\n".join(history)
 
 
@@ -125,7 +217,7 @@ def main() -> int:
     parser.add_argument("--baud", type=int, default=115200)
     args = parser.parse_args()
     try:
-        with serial.Serial(args.port, args.baud, timeout=1) as device:
+        with serial.Serial(args.port, args.baud, timeout=1, write_timeout=0.25) as device:
             print(f"Listening on {args.port}. Press Ctrl+C to stop.")
             return show_viewer(device)
     except serial.SerialException as error:
@@ -208,6 +300,23 @@ def show_viewer(device: serial.Serial) -> int:
 
     cellular_frame = tk.LabelFrame(values_frame, text="Cellular SMS")
     cellular_frame.pack(fill="both", expand=True, pady=(8, 0))
+    sms_control = SmsControl(device)
+
+    def refresh_sms_button():
+        enabled, message = sms_control.refresh(time.monotonic())
+        sms_button.configure(state="normal" if enabled else "disabled")
+        sms_hint.configure(text=message)
+
+    def send_sms():
+        sms_control.send(time.monotonic())
+        refresh_sms_button()
+
+    sms_button = tk.Button(cellular_frame, text="Send SMS", command=send_sms,
+                           state="disabled")
+    sms_button.pack(anchor="w", padx=4, pady=4)
+    sms_hint = tk.Label(cellular_frame, text=sms_control.message,
+                        anchor="w", justify="left", wraplength=310, fg="gray")
+    sms_hint.pack(fill="x", padx=4)
     cellular_label = tk.Label(cellular_frame, text="Waiting for cellular telemetry...",
                               anchor="w", justify="left", wraplength=310, fg="gray")
     cellular_label.pack(fill="x", padx=4, pady=4)
@@ -284,7 +393,7 @@ def show_viewer(device: serial.Serial) -> int:
     receive_buffer = bytearray()
     maximum_lengths = {
         b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000, b"BSMD": 5,
-        b"BSMC": 1024,
+        b"BSMC": 10000,
     }
     thermal_frame_count = 0
     cellular_last_received = None
@@ -294,9 +403,15 @@ def show_viewer(device: serial.Serial) -> int:
     def poll_device() -> None:
         nonlocal thermal_frame_count, cellular_last_received, cellular_stale
         nonlocal cellular_rendered_events
-        available = device.in_waiting
-        if available:
-            receive_buffer.extend(device.read(available))
+        try:
+            available = device.in_waiting
+            if available:
+                receive_buffer.extend(device.read(available))
+        except (serial.SerialException, OSError):
+            sms_control.last_received = None
+            refresh_sms_button()
+            cellular_label.configure(text="USB disconnected - reopen viewer to reconnect", fg="red")
+            return
 
         while True:
             candidates = [receive_buffer.find(marker) for marker in maximum_lengths]
@@ -325,6 +440,7 @@ def show_viewer(device: serial.Serial) -> int:
                 try:
                     sample = json.loads(payload.decode("utf-8"))
                     cellular_view(sample)  # Validate even an unchanged snapshot.
+                    sms_control.observe(sample, time.monotonic())
                     if sample["events"] != cellular_rendered_events or cellular_stale:
                         update_cellular_panel(cellular_label, cellular_history, sample)
                         cellular_rendered_events = sample["events"]
@@ -395,6 +511,7 @@ def show_viewer(device: serial.Serial) -> int:
                 and time.monotonic() - cellular_last_received > 10):
             cellular_label.configure(text="Cellular telemetry stale - showing last events", fg="gray")
             cellular_stale = True
+        refresh_sms_button()
         root.after(10, poll_device)
 
     root.after(10, poll_device)

@@ -120,12 +120,16 @@ extern "C" void app_main()
     while (true)
     {
         if (boot_button_released()) {
+            cellular_link_send_horn();
+        }
+
+        if (usb_telemetry_sms_requested()) {
             char phone[32];
             if (setup_mode_get_phone_number(phone, sizeof(phone))) {
                 char name[64];
                 char message[cellular::MAX_MESSAGE + 1];
                 if (!setup_mode_get_name(name, sizeof(name))) {
-                    ESP_LOGW("app_main", "Save a valid name in setup before sending the BOOT test");
+                    ESP_LOGW("app_main", "Save a valid name in setup before sending the dashboard test");
                     cellular_diagnostics_record("NO_NAME");
                 } else {
                     const int length = snprintf(message, sizeof(message),
@@ -133,7 +137,7 @@ extern "C" void app_main()
                         name);
                     if (length < 0 || static_cast<size_t>(length) >= sizeof(message) ||
                         !cellular::valid_message(message)) {
-                        ESP_LOGW("app_main", "Saved name cannot be used in the BOOT test; update it in setup");
+                        ESP_LOGW("app_main", "Saved name cannot be used in the dashboard test; update it in setup");
                         cellular_diagnostics_record("INVALID_NAME");
                     } else {
                         cellular_link_send_sms(phone, message);
@@ -186,6 +190,6 @@ extern "C" void app_main()
             last_stack_report = xTaskGetTickCount();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(20)); // Keep the BOOT button responsive.
+        vTaskDelay(pdMS_TO_TICKS(20)); // Keep USB commands and setup responsive.
     }
 }

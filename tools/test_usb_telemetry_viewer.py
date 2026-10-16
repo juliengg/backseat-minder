@@ -3,12 +3,118 @@
 import itertools
 import unittest
 from unittest.mock import Mock
+import serial
 
 from usb_telemetry_viewer import detection_statuses, update_detection_labels, regression_line
 from usb_telemetry_viewer import cellular_view, update_cellular_panel
+from usb_telemetry_viewer import SmsControl
+
+
+class SmsControlTests(unittest.TestCase):
+    def snapshot(self, count=0, busy=False, uptime=9000):
+        return {"uptime_ms": uptime, "sms_control": True,
+                "sms_busy": busy, "sms_requests": count, "events": []}
+
+    def control(self):
+        device = Mock()
+        device.write.return_value = len(b"SEND_SMS\n")
+        control = SmsControl(device)
+        control.observe(self.snapshot(), 0)
+        return control, device
+
+    def test_no_send_before_supported_fresh_telemetry(self):
+        control, device = SmsControl(Mock()), Mock()
+        control.device = device
+        control.send(0)
+        control.observe({"uptime_ms": 0, "events": []}, 0)
+        control.send(1)
+        device.write.assert_not_called()
+        self.assertIn("Update primary", control.refresh(1)[1])
+        control.observe(self.snapshot(), 2)
+        control.send(13)
+        device.write.assert_not_called()
+
+    def test_single_click_and_duplicate_clicks_until_ack(self):
+        control, device = self.control()
+        control.send(1)
+        control.send(2)
+        device.write.assert_called_once_with(b"SEND_SMS\n")
+        # Buffered telemetry from before the click must not re-enable the button.
+        control.observe(self.snapshot(), 3)
+        self.assertFalse(control.refresh(3)[0])
+        control.observe(self.snapshot(count=1, busy=True), 4)
+        self.assertFalse(control.refresh(4)[0])
+        control.observe(self.snapshot(count=1, busy=False), 5)
+        self.assertTrue(control.refresh(5)[0])
+        control.send(6)
+        self.assertEqual(device.write.call_count, 2)
+
+    def test_busy_and_stale_disable_send(self):
+        control, device = self.control()
+        control.observe(self.snapshot(busy=True), 1)
+        control.send(2)
+        control.observe(self.snapshot(busy=False), 3)
+        control.send(14)
+        device.write.assert_not_called()
+
+    def test_failed_or_partial_write_never_retries(self):
+        for outcome in (3, serial.SerialTimeoutException("timeout"), OSError("disconnected")):
+            control, device = self.control()
+            if isinstance(outcome, Exception):
+                device.write.side_effect = outcome
+            else:
+                device.write.return_value = outcome
+            control.send(1)
+            self.assertIn("write failed", control.refresh(2)[1])
+            control.send(2)
+            control.observe(self.snapshot(), 12)
+            self.assertIn("outcome unknown", control.refresh(12)[1])
+            device.write.assert_called_once()
+
+    def test_restart_and_no_confirmation_are_not_success(self):
+        control, device = self.control()
+        control.send(1)
+        control.observe(self.snapshot(uptime=0), 2)
+        self.assertIn("restarted", control.refresh(2)[1])
+        control.send(3)
+        control.observe(self.snapshot(uptime=1000), 14)
+        self.assertIn("No command confirmation", control.refresh(14)[1])
+        self.assertEqual(device.write.call_count, 2)
+
+    def test_malformed_capability_does_not_enable_send(self):
+        for field, value in (("sms_control", 1), ("sms_busy", "false"),
+                             ("sms_requests", -1), ("sms_requests", True)):
+            control, device = self.control()
+            sample = self.snapshot()
+            sample[field] = value
+            control.observe(sample, 1)
+            control.send(2)
+            device.write.assert_not_called()
 
 
 class CellularStatusTests(unittest.TestCase):
+    def test_incoming_sender_and_multiline_unicode_body(self):
+        sample = self.snapshot("SMS_RECEIVED")
+        sample["events"][0].update(sender="+15551234567", message='OK\nERROR|"😀')
+        text, color, history = cellular_view(sample)
+        self.assertEqual(text, "Received SMS from +15551234567")
+        self.assertEqual(color, "green")
+        self.assertIn('    OK\n    ERROR|"😀', history)
+        label, widget = Mock(), Mock()
+        update_cellular_panel(label, widget, sample)
+        update_cellular_panel(label, widget, sample)
+        self.assertEqual(widget.insert.call_args_list[0], widget.insert.call_args_list[1])
+
+    def test_incoming_invalid_fields_rejected(self):
+        for fields in ({}, {"sender": "+", "message": "x"},
+                       {"sender": "123\nRESULT|OK", "message": "x"},
+                       {"sender": "123", "message": "x" * 481},
+                       {"sender": "123", "message": "bad\x00body"}):
+            sample = self.snapshot("SMS_RECEIVED")
+            sample["events"][0].update(fields)
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                cellular_view(sample)
+
     def snapshot(self, *statuses):
         return {"uptime_ms": 9000, "events": [
             {"uptime_ms": i * 1000, "status": status}
@@ -55,6 +161,17 @@ class CellularStatusTests(unittest.TestCase):
         text, color, _ = cellular_view(self.snapshot("FUTURE_ERROR"))
         self.assertIn("FUTURE_ERROR", text)
         self.assertEqual(color, "red")
+
+    def test_horn_result_is_distinct_from_sms_success(self):
+        text, color, history = cellular_view(self.snapshot("HORN_ACCEPTED", "HORN_OK"))
+        self.assertEqual(text, "Horn: CAN sequence submitted")
+        self.assertEqual(color, "green")
+        self.assertNotIn("SMS submitted", history)
+
+    def test_horn_failures_are_visible(self):
+        for status in ("HORN_CAN_UNAVAILABLE", "HORN_CAN_SEND_FAILED", "HORN_CAN_OFF_FAILED",
+                       "HORN_RESULT_TIMEOUT", "HORN_UART_WRITE_FAILED"):
+            self.assertEqual(cellular_view(self.snapshot(status))[1], "red")
 
 
 class RegressionTests(unittest.TestCase):

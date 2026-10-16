@@ -1,5 +1,7 @@
 #include "usb_telemetry.h"
 #include "cellular_diagnostics.h"
+#include "cellular_link.h"
+#include "cellular_protocol.h"
 
 #include <stdio.h>
 
@@ -15,6 +17,8 @@ namespace {
 const char *TAG = "usb_telemetry";
 bool s_ready = false;
 SemaphoreHandle_t s_write_mutex = nullptr;
+uint32_t s_sms_requests = 0;
+cellular::LineBuffer s_command;
 
 bool write_bytes(const uint8_t *data, size_t length)
 {
@@ -67,6 +71,22 @@ void usb_telemetry_init()
     }
 }
 
+bool usb_telemetry_sms_requested()
+{
+    if (!s_ready) return false;
+    char bytes[128];
+    const int count = usb_serial_jtag_read_bytes(bytes, sizeof(bytes), 0);
+    bool requested = false;
+    for (int i = 0; i < count; ++i) {
+        if (s_command.push(bytes[i]) == cellular::FrameEvent::Ready &&
+            strcmp(s_command.data(), "SEND_SMS") == 0) {
+            requested = true;
+        }
+    }
+    if (requested) ++s_sms_requests;
+    return requested;
+}
+
 bool usb_telemetry_host_connected()
 {
     // The USB Serial/JTAG connection monitor is not reliable on every board
@@ -110,8 +130,9 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
     }
     // Repeat the recent history with each sensor sample so dropped USB packets
     // or opening the viewer after a result do not lose the summary.
-    static char cellular[1024];
-    const size_t cellular_length = cellular_diagnostics_json(cellular, sizeof(cellular));
+    static char cellular[cellular::DIAGNOSTICS_JSON_CAPACITY];
+    const size_t cellular_length = cellular_diagnostics_json(
+        cellular, sizeof(cellular), cellular_link_busy(), s_sms_requests);
     if (cellular_length) {
         send_packet("BSMC", reinterpret_cast<const uint8_t *>(cellular), cellular_length);
     }

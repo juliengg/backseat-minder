@@ -5,6 +5,8 @@
 #include <string>
 
 constexpr int SERIAL_8N1 = 0;
+constexpr int INPUT = 1;
+inline void pinMode(int, int) {}
 class HardwareSerial;
 void test_on_write(HardwareSerial &, char);
 uint32_t millis();

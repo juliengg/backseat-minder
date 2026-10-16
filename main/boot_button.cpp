@@ -33,7 +33,7 @@ bool boot_button_released()
         candidate_since = now;
     }
     if (now - candidate_since < DEBOUNCE_US) return false;
-    // A button held at startup must be released before it can trigger an SMS.
+    // A button held at startup must be released before it can trigger an action.
     if (!armed) {
         stable_level = candidate_level;
         armed = stable_level == 1;

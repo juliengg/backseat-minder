@@ -3,6 +3,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
-// Starts a task that converts face-detection output frames to JPEG and sends
-// at most one development preview frame per second over native USB.
+// Starts the shared JPEG consumer of face-detection output. Native USB previews
+// run at up to 3 FPS; setup positioning snapshots are supplied on demand at 1 FPS.
 void usb_camera_stream_start(QueueHandle_t frame_queue);

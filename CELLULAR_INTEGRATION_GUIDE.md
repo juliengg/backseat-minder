@@ -1,8 +1,14 @@
 # Cellular ESP32 Integration Guide
 
-Current firmware update: setup requires a name and saves it in NVS. A primary BOOT
-press/release now sends `ALERT: {name}'s Backseat Minder device has detected an unattended passenger in their vehicle.`
-The `Testing` examples below describe the original prototype and can still be used
+Current firmware update: setup requires a name and saves it in NVS. The Python
+telemetry dashboard's **Send SMS** button now sends
+`Backseat Minder test for {name}. This checks delivery of passenger alerts. No action is needed.`
+over the existing primary/secondary SMS service. The primary BOOT button no longer
+triggers SMS. See [the current dashboard instructions](cell/README.md#dashboard-sms-control).
+It now requests one horn chirp through the shared UART link; see
+[the current horn service instructions](cell/README.md#horn-control) for the
+user-tested Q50 frames, GPIO assignments and secondary service layout.
+The BOOT-trigger requirements and `Testing` examples below describe the original prototype and can still be used
 to exercise the secondary directly. Existing devices without a saved name must
 complete setup before sending the named alert. Names must fit the ASCII SMS protocol.
 

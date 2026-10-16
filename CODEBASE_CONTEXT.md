@@ -4,7 +4,7 @@
 
 This repository contains ESP-IDF firmware for an **ESP32-S3 camera-based back-seat occupancy reminder prototype**. The indicator LED reflects the combined face, mmWave and thermal presence signals.
 
-The project also provides an on-device captive-portal setup flow for collecting and persisting contact-related settings. A primary BOOT press/release can now request a test SMS through the secondary ESP32 in `cell/`. Real sending defaults off for bring-up. There are no automatic sensor-triggered SMS alerts, calls or emergency-services integrations.
+The project also provides an on-device captive-portal setup flow for collecting and persisting contact-related settings. The Python telemetry dashboard's **Send SMS** button requests a test SMS through the primary's native USB connection and the secondary ESP32 in `cell/`. Real sending defaults off for bring-up. There are no automatic sensor-triggered SMS alerts, calls or emergency-services integrations.
 
 ## Platform and Build
 
@@ -31,11 +31,12 @@ idf.py -p COM4 flash monitor
 | File | Role |
 | --- | --- |
 | `main/app_main.cpp` | Firmware entry point; initializes setup support, camera/face detection, and the main LED loop. |
-| `main/boot_button.cpp` | Debounced BOOT press/release event; no sleep or driver-presence toggle. |
+| `main/boot_button.cpp` | Debounced BOOT press/release for one UART horn request; startup-held presses ignored. |
 | `main/cellular_link.cpp` | UART2 SMS worker, acknowledgement/result logging, busy guard and timeouts. |
 | `main/cellular_diagnostics.cpp` | Thread-safe last-eight-event history, sent over native USB as BSMC JSON snapshots. |
 | `shared/cellular_protocol.h` | Shared bounded framing and phone/message validation. |
-| `cell/src/main.cpp` | Secondary UART command service and TEL0161 modem transactions. |
+| `cell/src/main.cpp` | Small secondary setup/loop entry point calling services. |
+| `cell/src/services/` | UART command dispatch, bounded TEL0161 SMS service and MCP2515 Q50 horn service. |
 | `main/setup_mode.h` | Public interface for setup mode. |
 | `main/setup_mode.cpp` | Captive portal, Wi-Fi access point, DNS redirection, form parsing, and NVS configuration storage. |
 | `main/CMakeLists.txt` | Registers application source files and component dependencies. |
@@ -53,7 +54,8 @@ idf.py -p COM4 flash monitor
 4. A FreeRTOS queue is created for camera frames.
 5. The ESP-WHO camera pipeline is registered for RGB565/QVGA frames and face detection.
 6. The application polls with a 20 ms delay between iterations:
-   - checks BOOT press/release and queues the named alert to the saved primary number;
+   - polls USB for the dashboard's `SEND_SMS` command and queues the named test message to the saved primary number;
+   - sends `HORN_CHIRP` through the same UART worker on a primary BOOT press/release;
    - checks whether GPIO 38 is being held, and enters setup mode if so;
    - every three seconds, updates in-memory `temperature_f` and `humidity_percent`
      values from an AM2302/DHT22 sensor on GPIO 1;
@@ -100,21 +102,32 @@ python -m pip install pillow
 python tools/usb_telemetry_viewer.py --port COM5
 ```
 
-The preview is JPEG-compressed and limited to one frame per second to avoid making USB
-debugging alter normal face-detection behavior. It uses the detected-frame output, so
+The USB preview is JPEG-compressed and limited to three frames per second. It uses the detected-frame output, so
 face boxes may be visible in the preview.
 
 ### Manual cellular SMS test
 
-The firmware remains in normal active mode. BOOT (GPIO0) produces one event after
-both press and release have been stable for 50 ms; a startup-held button is ignored
-until released. Driver-presence toggling and deep sleep have been removed.
+The firmware remains in normal active mode. The dashboard's **Send SMS** button
+sends `SEND_SMS\n` over native USB. The primary polls for complete commands without
+blocking and ignores unknown or malformed lines. BOOT (GPIO0) no longer triggers
+an SMS; a debounced press/release now requests one horn chirp on the secondary.
+Driver-presence toggling and deep sleep have been removed.
 
 The primary reads and normalizes only `bsm_cfg/phone`, then queues
 `SEND_SMS|number|message` through UART2 TX39/RX40 at 115200 8N1. A worker logs the
 secondary acknowledgement and final result without blocking monitoring. Another
-press while active logs `BUSY`. There are no automatic retries; after a 3-second
+request while active logs `BUSY`. There are no automatic retries; after a 3-second
 ACK timeout the link stays busy until a result or the 110-second overall deadline.
+
+The shared worker accepts one SMS or horn action at a time; overlap is rejected,
+not deferred. `HORN_CHIRP` has typed `HORN_ACCEPTED`/`HORN_RESULT` replies and a
+3-second overall deadline. The secondary's `src/services/can_horn.cpp` preserves
+the user-tested 2015 Infiniti Q50 ID `0x358`, DLC 8, 500 kbps/8 MHz sequence (ON
+at 0/20/120/220 ms, OFF at 240 ms) using SPI at 1 MHz. Secondary GPIOs are SCK25,
+MOSI23, MISO22, CS21 and INT32. Startup sends no horn frames; initialization
+failure leaves SMS available. ON errors still attempt OFF; reported send errors
+reset/disable CAN until secondary restart. See `cell/README.md` for wiring,
+termination requirements and the distinction between submission and observed honking.
 
 The secondary is an ESP32-WROOM-32 development board (`esp32dev` in PlatformIO).
 Its UART2 RX26/TX27 connects to primary TX39/RX40 respectively. It owns modem UART1
@@ -127,12 +140,17 @@ not proof of handset delivery.
 See [cell/README.md](cell/README.md) for wiring, enablement, build commands, timeout
 policy and bench acceptance checks. Keep the primary's microSD slot empty: GPIO39/40
 share its bus. GPIO38 setup, UART1 mmWave, camera, other sensors and USB retain their
-existing behavior. During the blocking setup session BOOT is not polled.
+existing behavior. During the blocking setup session USB commands are not polled.
 
 The Python USB viewer displays a Cellular SMS panel with the latest summary and
 recent timestamped events. `usb_telemetry_send()` sends a `BSMC` JSON snapshot with
 each sensor sample (about every three seconds), preserving short-lived ACK/results
-without making the SMS worker wait on USB. No recipient or SMS content is included.
+without making the SMS worker wait on USB. Outgoing recipient/body remain omitted;
+incoming `SMS_RECEIVED` events include sender and UTF-8 body for the log window.
+The secondary configures stored-message notifications after boot and reads notified
+slots in PDU mode, including notifications received during sending. The primary
+listens continuously. Incoming text is display-only. Both boards and the viewer
+must be updated; see [incoming SMS](secondary_firmware/README.md#incoming-sms-in-the-python-log).
 The panel marks telemetry stale after ten seconds without a valid cellular packet.
 
 ### Setup mode
@@ -149,6 +167,28 @@ Holding the external setup button on GPIO 38 enters a blocking setup session:
 5. The firmware tears down the Wi-Fi/AP resources and reboots.
 
 While waiting for portal confirmation, GPIO 2 blinks every 200 ms.
+
+The setup page includes **View positioning**, off by default. Enabling it shows
+the camera at **1 FPS** over the device's Wi-Fi, without a USB connection. The
+option is temporary and is not saved in NVS. Turning it off, hiding/leaving the
+page or submitting the form cancels requests and clears the displayed image.
+Camera-unavailable responses show a retry message instead of a stale picture.
+
+`main/setup_positioning.js` is embedded in the firmware and served at
+`/positioning.js`. It requests `/positioning.jpg` one at a time at up to 1 FPS.
+`main/positioning_preview.cpp` maintains a bounded JPEG cache, active only in setup,
+with a short demand lease and stale-frame expiry. The existing camera consumer in
+`usb_camera_stream.cpp` supplies JPEGs, sharing encoding work with USB when both
+need a frame. HTTP requests copy the latest image and finish without waiting for
+capture or holding camera buffers; the normal setup form remains available.
+Successful confirmation disables the cache before the existing teardown/reboot.
+
+Run preview firmware/HTML checks with
+`python tests/run_positioning_tests.py --zig` and frontend lifecycle checks with
+`node tests/setup_positioning_test.cjs`. Device acceptance: join `Backseat Minder`,
+enable View positioning at `192.168.4.1`, verify the image updates once per second
+without USB, toggle it off/on, then confirm valid setup while the preview runs.
+These automated checks do not verify physical Wi-Fi/camera performance on a phone.
 
 ## Persistent Configuration
 
@@ -170,15 +210,15 @@ Older devices without a saved `name` must complete setup before sending an alert
 Saved form values are HTML-escaped
 when displayed, including names containing apostrophes, quotes or ampersands.
 
-The manual BOOT alert reads the saved name and sends:
-`ALERT: {name}'s Backseat Minder device has detected an unattended passenger in their vehicle.`
+The manual dashboard test reads the saved name and sends:
+`Backseat Minder test for {name}. This checks delivery of passenger alerts. No action is needed.`
 
 The primary `phone` field is read for each manual SMS request through `setup_mode_get_phone_number()`. The helper strips common phone formatting and rejects missing or malformed values. Emergency contacts and the emergency-alert toggle remain stored only.
 
 ## Hardware Assumptions
 
 - Freenove ESP32-S3 WROOM with the custom camera pin map in `sdkconfig`.
-- GPIO 0: active-low onboard BOOT button for a manual test SMS press/release.
+- GPIO 0: onboard BOOT button for bootloader entry and one manual horn request per stable press/release.
 - GPIO 39/40: cellular UART2 TX/RX; microSD slot must remain empty.
 - GPIO 38: active-low external setup button, using the internal pull-up.
 - GPIO 2: external/status LED output used for face-detection status and setup-mode blinking.

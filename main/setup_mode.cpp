@@ -1,6 +1,7 @@
 #include "setup_mode.h"
 #include "cellular_protocol.h"
 #include "alert_message.h"
+#include "positioning_preview.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -52,6 +53,7 @@ static TaskHandle_t dns_task_handle = NULL;
 static esp_netif_t *s_ap_netif = NULL;
 static bool s_netif_inited = false;
 static bool s_eventloop_inited = false;
+extern const char positioning_script[] asm("_binary_setup_positioning_js_start");
 
 // ─── NVS Helpers ───────────────────────────────────────────────────────
 
@@ -188,7 +190,7 @@ static void form_get_field(const char *body, const char *key, char *out, size_t 
 
 // We build the portal HTML dynamically to inject saved values.
 // Heap-allocated in the handler; includes space for escaped saved values.
-#define PORTAL_HTML_MAXLEN 8192
+#define PORTAL_HTML_MAXLEN 10240
 
 static std::string html_escape(const char *value)
 {
@@ -223,6 +225,7 @@ static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
           "--danger:#ff6b6b;--radius:12px;"
         "}"
         "*{box-sizing:border-box;margin:0;padding:0;}"
+        "[hidden]{display:none!important;}"
         "body{"
           "background:var(--bg);color:var(--text);"
           "font-family:'DM Sans',sans-serif;"
@@ -278,6 +281,11 @@ static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
         ".toggle-text .label{font-size:0.9rem;font-weight:600;margin-bottom:3px;}"
         ".toggle-text .desc{font-size:0.78rem;color:var(--muted);line-height:1.45;}"
         ".toggle-text .desc em{color:var(--danger);font-style:normal;font-weight:600;}"
+        ".positioning{margin-bottom:24px;}"
+        ".preview{margin-top:12px;}"
+        ".preview img{display:block;width:100%%;height:auto;aspect-ratio:4/3;"
+          "object-fit:contain;border-radius:var(--radius);background:#000;}"
+        ".preview p{font-size:0.78rem;color:#aaa;line-height:1.5;margin-top:8px;}"
         "button[type=submit]{"
           "width:100%%;margin-top:28px;"
           "background:var(--accent);color:#0a0a0a;"
@@ -289,10 +297,25 @@ static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
         "button[type=submit]:hover{opacity:0.9;}"
         "button[type=submit]:active{transform:scale(0.98);}"
         ".required-note{font-size:0.72rem;color:var(--muted);margin-top:18px;text-align:center;}"
-        "</style></head><body>"
+        "</style><script src='/positioning.js' defer></script></head><body>"
         "<div class='card'>"
           "<div class='header'><div class='dot'></div><h1>Backseat Minder</h1></div>"
           "<p class='subtitle'>Configure your device. Settings are saved on-board<br>and restored after reboot.</p>"
+
+          "<section class='positioning' aria-label='Camera positioning'>"
+            "<label class='toggle-row' for='view-positioning'>"
+              "<input type='checkbox' id='view-positioning' aria-controls='positioning-preview'>"
+              "<div class='toggle-text'>"
+                "<div class='label'>View positioning</div>"
+                "<div class='desc'>Show the camera view to check where your device is pointing.</div>"
+              "</div>"
+            "</label>"
+            "<div class='preview' id='positioning-preview' hidden>"
+              "<img id='positioning-image' width='320' height='240' hidden alt='Live camera positioning preview'>"
+              "<p id='positioning-status' role='status' aria-live='polite'>Waiting for camera...</p>"
+              "<p>Adjust the device until the back seats are in view. Preview refreshes once per second.</p>"
+            "</div>"
+          "</section>"
 
           "<form action='/confirm' method='POST'>"
 
@@ -441,6 +464,30 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t positioning_script_get_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/javascript; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, positioning_script, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t positioning_get_handler(httpd_req_t *req)
+{
+    size_t length = 0;
+    uint8_t *jpeg = positioning_preview_snapshot(&length);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    if (!jpeg) {
+        // Capture is asynchronous: never wait here and hold up the setup form.
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Retry-After", "1");
+        return httpd_resp_send(req, "Camera frame not ready", HTTPD_RESP_USE_STRLEN);
+    }
+    httpd_resp_set_type(req, "image/jpeg");
+    const esp_err_t result = httpd_resp_send(req, reinterpret_cast<const char *>(jpeg), length);
+    free(jpeg); // No preview/cache lock is held while serving a slow client.
+    return result;
+}
+
 static esp_err_t confirm_post_handler(httpd_req_t *req)
 {
     // Read POST body
@@ -501,6 +548,7 @@ static esp_err_t confirm_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Contact configuration saved");
+    positioning_preview_set_active(false);
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, CONFIRM_HTML, HTTPD_RESP_USE_STRLEN);
@@ -533,6 +581,8 @@ static httpd_handle_t start_webserver(void)
     // ── Core handlers ──────────────────────────────────────────
     httpd_uri_t root    = { "/",       HTTP_GET,  root_get_handler,     NULL };
     httpd_uri_t confirm = { "/confirm",HTTP_POST, confirm_post_handler, NULL };
+    httpd_uri_t preview = { "/positioning.jpg", HTTP_GET, positioning_get_handler, NULL };
+    httpd_uri_t script = { "/positioning.js", HTTP_GET, positioning_script_get_handler, NULL };
 
     // ── Captive portal detection endpoints ─────────────────────
     // Android / Chrome
@@ -558,6 +608,8 @@ static httpd_handle_t start_webserver(void)
 
     httpd_register_uri_handler(hdl, &root);
     httpd_register_uri_handler(hdl, &confirm);
+    httpd_register_uri_handler(hdl, &preview);
+    httpd_register_uri_handler(hdl, &script);
     httpd_register_uri_handler(hdl, &and1);
     httpd_register_uri_handler(hdl, &and2);
     httpd_register_uri_handler(hdl, &and3);
@@ -689,6 +741,7 @@ void enter_setup_mode()
 
     setup_confirmed = false;
     start_ap();
+    positioning_preview_set_active(true);
     server = start_webserver();
 
     bool led_state = false;
@@ -700,6 +753,7 @@ void enter_setup_mode()
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 
+    positioning_preview_set_active(false);
     if (dns_task_handle) {
         vTaskDelete(dns_task_handle);
         dns_task_handle = NULL;
