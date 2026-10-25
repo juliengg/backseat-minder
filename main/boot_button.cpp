@@ -14,14 +14,15 @@ bool armed = false;
 bool press_pending = false;
 }
 
-void boot_button_init()
+void boot_button_init(bool wakeup_press)
 {
     ESP_ERROR_CHECK(gpio_reset_pin(BOOT_GPIO));
     ESP_ERROR_CHECK(gpio_set_direction(BOOT_GPIO, GPIO_MODE_INPUT));
     ESP_ERROR_CHECK(gpio_set_pull_mode(BOOT_GPIO, GPIO_PULLUP_ONLY));
-    candidate_level = stable_level = gpio_get_level(BOOT_GPIO);
+    candidate_level = gpio_get_level(BOOT_GPIO);
+    stable_level = wakeup_press ? 0 : candidate_level;
     candidate_since = esp_timer_get_time();
-    armed = press_pending = false;
+    armed = press_pending = wakeup_press;
 }
 
 bool boot_button_released()

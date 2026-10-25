@@ -194,6 +194,14 @@ Each speed runs 300 timing-register write/read pairs plus configuration-mode
 checks. If those pass, it checks 16 internally looped-back frames for matching
 ID, length, and data. It requests configuration mode when finished.
 
+It then detaches hardware SPI and independently bit-bangs mode-0 SPI with a
+25-microsecond half-period. This uses raw RESET/READ/WRITE instructions without
+the MCP2515 driver, verifies 16 reset-state register pairs, and, if those pass,
+checks 128 writes/reads of transmit-buffer data bytes without requesting a
+transmission. Software SPI passing while hardware SPI fails points toward
+hardware-SPI configuration or timing; both failing leaves the signal path,
+electrical conditions, pin routing, and module unresolved.
+
 - Register failures: investigate power, ground, SPI routing, level translation,
   connections, and the module before diagnosing the external CAN bus.
 - Only the slower speed passes: investigate SPI signal integrity/translation.

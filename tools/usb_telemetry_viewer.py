@@ -125,6 +125,83 @@ class SmsControl:
             self.message = "USB write failed - SMS outcome unknown; check before retrying."
 
 
+class UsbConnection:
+    """Passively reconnect after deep sleep; reading never keeps the board awake."""
+
+    def __init__(self, device):
+        self.device = device
+        self.next_attempt = 0
+        self.generation = 0
+
+    def read_available(self, now):
+        if not self.device.is_open:
+            if now < self.next_attempt:
+                return None
+            try:
+                self.device.open()
+                self.generation += 1
+            except (serial.SerialException, OSError):
+                self.next_attempt = now + 0.5
+                return None
+        try:
+            available = self.device.in_waiting
+            return self.device.read(available) if available else b""
+        except (serial.SerialException, OSError):
+            try:
+                self.device.close()
+            except (serial.SerialException, OSError):
+                pass
+            self.next_attempt = now + 0.5
+            return None
+
+
+def driver_view(sample):
+    """Format a current driver flag without inventing a physical distance."""
+    if type(sample.get("driver_present")) is not bool:
+        return "Driver present: unknown (no beacon telemetry)", "gray"
+    if sample.get("driver_checking") is True:
+        if sample.get("power_state") == "beacon_probe" and sample["driver_present"]:
+            return "Driver present: YES\nDeep sleep mode (periodic beacon check; last confirmed)", "green"
+        previous = "YES (last confirmed); " if sample["driver_present"] else ""
+        return f"Driver present: {previous}checking beacon...", "gray"
+    if sample.get("beacon_available") is not True:
+        return "Driver present: unknown (BLE unavailable; monitoring active)", "red"
+    present = sample["driver_present"]
+    rssi = sample.get("beacon_rssi_dbm")
+    signal = (f" | {rssi} dBm" if sample.get("beacon_rssi_valid") is True
+              and type(rssi) is int else " | no fresh beacon signal")
+    power = ("Deep sleep mode (last announced)" if sample.get("deep_sleep_pending")
+             else "Deep sleep mode (periodic beacon check)"
+             if sample.get("power_state") == "beacon_probe" and present else "Active")
+    return f"Driver present: {'YES' if present else 'NO'}{signal}\n{power}", (
+        "green" if present else "darkorange")
+
+
+class DriverDisplay:
+    """Hold a confirmed sleep/presence report through USB gaps and wake probes."""
+
+    def __init__(self):
+        self.sample = {}
+        self.last_received = None
+
+    def observe(self, sample, now):
+        if type(sample.get("driver_present")) is not bool:
+            return
+        self.last_received = now
+        report = dict(sample)
+        if (sample.get("driver_checking") is True
+                and sample.get("power_state") == "beacon_probe"
+                and (sample["driver_present"] or self.sample.get("driver_present") is True)):
+            report["driver_present"] = True
+        self.sample = report
+
+    def view(self, now):
+        text, color = driver_view(self.sample)
+        if self.last_received is not None and now - self.last_received > 15:
+            text += f"\nLast report: {int(now - self.last_received)} seconds ago"
+        return text, color
+
+
 def cellular_view(sample: dict) -> tuple:
     """Validate a BSMC snapshot and format its bounded event history."""
     if not isinstance(sample, dict) or not isinstance(sample.get("events"), list):
@@ -216,16 +293,24 @@ def main() -> int:
     parser.add_argument("--port", required=True, help="COM port, e.g. COM4")
     parser.add_argument("--baud", type=int, default=115200)
     args = parser.parse_args()
+    device = None
     try:
-        with serial.Serial(args.port, args.baud, timeout=1, write_timeout=0.25) as device:
-            print(f"Listening on {args.port}. Press Ctrl+C to stop.")
-            return show_viewer(device)
+        # The COM port may not exist until the next timed beacon check.
+        device = serial.Serial(port=None, baudrate=args.baud, timeout=0, write_timeout=0.25)
+        device.dtr = False
+        device.rts = False
+        device.port = args.port
+        print(f"Waiting for {args.port}; reconnecting automatically after sleep. Press Ctrl+C to stop.")
+        return show_viewer(device)
     except serial.SerialException as error:
         print(f"Could not open {args.port}: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\nStopped.")
         return 0
+    finally:
+        if device is not None:
+            device.close()
 
 
 def show_viewer(device: serial.Serial) -> int:
@@ -297,6 +382,14 @@ def show_viewer(device: serial.Serial) -> int:
                                 width=3, fg="gray", font=font)
         status_label.grid(row=row, column=1, sticky="n", padx=(8, 0))
         detection_labels[name] = status_label
+
+    driver_label = tk.Label(values_frame, text=driver_view({})[0],
+                            anchor="w", justify="left", wraplength=310,
+                            fg="gray", font=("TkDefaultFont", 10, "bold"))
+    driver_label.pack(fill="x", pady=(8, 0))
+    connection_label = tk.Label(values_frame, text="USB connected", anchor="w",
+                                justify="left", wraplength=310, fg="gray")
+    connection_label.pack(fill="x")
 
     cellular_frame = tk.LabelFrame(values_frame, text="Cellular SMS")
     cellular_frame.pack(fill="both", expand=True, pady=(8, 0))
@@ -393,25 +486,47 @@ def show_viewer(device: serial.Serial) -> int:
     receive_buffer = bytearray()
     maximum_lengths = {
         b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000, b"BSMD": 5,
-        b"BSMC": 10000,
+        b"BSMC": 10000, b"BSMP": 512,
     }
     thermal_frame_count = 0
     cellular_last_received = None
     cellular_stale = False
     cellular_rendered_events = None
+    driver_display = DriverDisplay()
+    connection = UsbConnection(device)
+
+    def update_driver(sample):
+        driver_display.observe(sample, time.monotonic())
+        text, color = driver_display.view(time.monotonic())
+        driver_label.configure(text=text, fg=color)
+        if sample.get("deep_sleep_pending") is True or sample.get("power_state") == "beacon_probe":
+            sms_control.last_received = None
+            connection_label.configure(text="Sleep announced; USB will reconnect for beacon checks",
+                                        fg="gray")
+        else:
+            connection_label.configure(text="USB connected", fg="gray")
 
     def poll_device() -> None:
         nonlocal thermal_frame_count, cellular_last_received, cellular_stale
         nonlocal cellular_rendered_events
-        try:
-            available = device.in_waiting
-            if available:
-                receive_buffer.extend(device.read(available))
-        except (serial.SerialException, OSError):
+        previous_generation = connection.generation
+        data = connection.read_available(time.monotonic())
+        if data is None:
+            receive_buffer.clear()
             sms_control.last_received = None
             refresh_sms_button()
-            cellular_label.configure(text="USB disconnected - reopen viewer to reconnect", fg="red")
-            return
+            connection_label.configure(
+                text="USB disconnected (sleep or unplugged); reconnecting automatically.\n"
+                     "Driver flag shows the last report.", fg="gray")
+        else:
+            if connection.generation != previous_generation:
+                receive_buffer.clear()  # A packet cannot span a device reboot.
+                cellular_stale = True
+                connection_label.configure(text="USB reconnected", fg="gray")
+            receive_buffer.extend(data)
+
+        text, color = driver_display.view(time.monotonic())
+        driver_label.configure(text=text, fg=color)
 
         while True:
             candidates = [receive_buffer.find(marker) for marker in maximum_lengths]
@@ -435,6 +550,16 @@ def show_viewer(device: serial.Serial) -> int:
                 break
             payload = bytes(receive_buffer[8:8 + payload_length])
             del receive_buffer[:8 + payload_length]
+
+            if packet_type == b"BSMP":
+                try:
+                    sample = json.loads(payload.decode("utf-8"))
+                    if not isinstance(sample, dict):
+                        raise ValueError("expected driver telemetry object")
+                    update_driver(sample)
+                except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+                    pass
+                continue
 
             if packet_type == b"BSMC":
                 try:
@@ -462,6 +587,7 @@ def show_viewer(device: serial.Serial) -> int:
                               f"Temperature/humidity valid: {sample.get('temperature_humidity_valid')}")
                     )
                     update_detection_labels(detection_labels, sample)
+                    update_driver(sample)
                 except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
                     pass
                 continue
@@ -512,7 +638,7 @@ def show_viewer(device: serial.Serial) -> int:
             cellular_label.configure(text="Cellular telemetry stale - showing last events", fg="gray")
             cellular_stale = True
         refresh_sms_button()
-        root.after(10, poll_device)
+        root.after(100 if data is None else 10, poll_device)
 
     root.after(10, poll_device)
     root.mainloop()

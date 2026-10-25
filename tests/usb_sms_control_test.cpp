@@ -8,7 +8,8 @@
 static std::string rx, tx;
 static bool link_busy = false;
 static unsigned reads = 0;
-int64_t esp_timer_get_time() { return 9000000; }
+static int64_t now_us = 9000000;
+int64_t esp_timer_get_time() { return now_us; }
 void test_log(const char *, ...) {}
 bool cellular_link_busy() { return link_busy; }
 esp_err_t usb_serial_jtag_driver_install(usb_serial_jtag_driver_config_t *config) {
@@ -27,6 +28,7 @@ int usb_serial_jtag_write_bytes(const void *buffer, size_t size, TickType_t) {
     tx.append(static_cast<const char *>(buffer), size);
     return static_cast<int>(size);
 }
+esp_err_t usb_serial_jtag_wait_tx_done(TickType_t) { return ESP_OK; }
 
 int main() {
     assert(!usb_telemetry_sms_requested() && reads == 0);
@@ -52,8 +54,42 @@ int main() {
     const auto before = reads;
     assert(!usb_telemetry_sms_requested() && reads == before + 1 && rx.size() == 372);
     rx.clear();
+    assert(!usb_telemetry_sms_pending());
+    rx = "\nVIEWER_"; // Leading delimiter recovers from a prior partial/oversized line.
+    usb_telemetry_poll_commands();
+    assert(!usb_telemetry_sms_pending());
+    rx = "ALIVE\n";
+    assert(!usb_telemetry_sms_requested()); // A heartbeat never triggers SMS.
+    assert(!usb_telemetry_sms_pending()); // Legacy viewer heartbeats cannot inhibit sleep.
+    rx = "\nVIEWER_ALIVE\nSEND_SMS\n";
+    usb_telemetry_poll_commands(); // Simulate reading commands during a wake probe.
+    assert(usb_telemetry_sms_pending() && s_sms_requests == 4);
+    assert(usb_telemetry_sms_requested()); // The probe preserves the command for the main loop.
+    assert(!usb_telemetry_sms_requested() && !usb_telemetry_sms_pending());
+    rx = "VIEWER_ALIVE|invalid\n";
+    usb_telemetry_poll_commands();
+    assert(!usb_telemetry_sms_pending());
     link_busy = true;
-    usb_telemetry_send(70.0f, 50.0f, true, false, false, false, false);
+    usb_telemetry_send(70.0f, 50.0f, true, false, false, false, false,
+                       {true, false, true, -81});
+    assert(tx.find("\"driver_present\":false") != std::string::npos);
+    assert(tx.find("\"beacon_rssi_dbm\":-81") != std::string::npos);
+    usb_telemetry_send_driver_status({true, true, true, -65}, TelemetryPowerState::SleepPending);
+    assert(tx.find("BSMP") != std::string::npos);
+    assert(tx.find("\"driver_present\":true") != std::string::npos);
+    assert(tx.find("\"deep_sleep_pending\":true") != std::string::npos);
+    assert(tx.find("\"beacon_recheck_ms\":8000") != std::string::npos);
+    assert(tx.find("\"power_state\":\"sleep_pending\"") != std::string::npos);
+    assert(tx.find("telemetry_active") == std::string::npos);
+    tx.clear();
+    usb_telemetry_send_driver_status({true, true, false, 0, true}, TelemetryPowerState::BeaconProbe);
+    assert(tx.find("\"driver_present\":true") != std::string::npos);
+    assert(tx.find("\"driver_checking\":true") != std::string::npos);
+    assert(tx.find("\"power_state\":\"beacon_probe\"") != std::string::npos);
+    usb_telemetry_send(70.0f, 50.0f, true, false, false, false, false,
+                       {true, true, true, -65});
+    usb_telemetry_flush();
+    assert(tx.find("\"power_state\":\"active\"") != std::string::npos);
     const auto marker = tx.find("BSMC");
     assert(marker != std::string::npos);
     const auto *header = reinterpret_cast<const unsigned char *>(tx.data() + marker + 4);
@@ -62,7 +98,7 @@ int main() {
     assert(json.size() == size && json.back() == '}');
     assert(json.find("\"sms_control\":true") != std::string::npos);
     assert(json.find("\"sms_busy\":true") != std::string::npos);
-    assert(json.find("\"sms_requests\":3") != std::string::npos);
+    assert(json.find("\"sms_requests\":4") != std::string::npos);
     delete s_write_mutex;
     puts("PASS: bounded nonblocking USB commands, recovery, coalescing and receipt telemetry");
 }

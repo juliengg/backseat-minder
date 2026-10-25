@@ -18,6 +18,8 @@
 #include "who_camera.h"
 #include "driver/gpio.h"
 #include "boot_button.h"
+#include "beacon_tracker.h"
+#include "driver_power.h"
 #include "cellular_link.h"
 #include "cellular_diagnostics.h"
 #include "cellular_protocol.h"
@@ -77,13 +79,12 @@ void thermal_stream_start()
 
 extern "C" void app_main()
 {
+    const bool boot_wakeup = driver_power_init();
     setup_mode_init();  // handles NVS, button GPIO
-    boot_button_init();
-    const esp_err_t cellular_status = cellular_link_init();
-    if (cellular_status != ESP_OK) {
-        ESP_LOGW("app_main", "Cellular link unavailable: %s", esp_err_to_name(cellular_status));
-        cellular_diagnostics_record("LINK_UNAVAILABLE");
-    }
+    boot_button_init(boot_wakeup);
+    usb_telemetry_init();
+    const bool beacon_ready = beacon_tracker_init(driver_power_timer_wakeup());
+    if (!beacon_ready) ESP_LOGW("app_main", "Beacon unavailable; monitoring stays active");
 
     // Suppress the onboard NeoPixel (GPIO 48) by driving it low.
     // Without this the camera driver leaves the data line floating,
@@ -96,10 +97,48 @@ extern "C" void app_main()
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_GPIO, 0);
 
+    bool setup_requested_during_probe = false;
+    if (driver_power_timer_wakeup() && beacon_ready) {
+        // Do not start the camera, AI, sensors or cellular worker just to check
+        // a still-near fob. A missing/weak fob exits into full monitoring.
+        const TickType_t probe_started = xTaskGetTickCount();
+        TickType_t last_probe_report = probe_started;
+        // Allow a slow advertising fob to supply three fresh samples without
+        // starting all sensors. A 5-second absence still ends the probe early.
+        while (xTaskGetTickCount() - probe_started <= pdMS_TO_TICKS(10000)) {
+            usb_telemetry_poll_commands();
+            if (usb_telemetry_sms_pending()) break; // Start the worker to service the request.
+            if (gpio_get_level(GPIO_NUM_0) == 0) {
+                boot_button_init(true); // Preserve a press arriving during a probe.
+                break;
+            }
+            if (setup_mode_button_pressed()) {
+                setup_requested_during_probe = true;
+                break;
+            }
+            if (xTaskGetTickCount() - last_probe_report >= pdMS_TO_TICKS(500)) {
+                usb_telemetry_send_driver_status(beacon_tracker_status(), TelemetryPowerState::BeaconProbe);
+                last_probe_report = xTaskGetTickCount();
+            }
+            driver_power_sleep_if_present(false);
+            const auto probe = beacon_tracker_status();
+            if (!probe.available && !probe.checking) break;
+            if (probe.available && !probe.checking && !probe.driver_present) {
+                usb_telemetry_send_driver_status(probe, TelemetryPowerState::Active);
+                break; // Confirmed AWAY: start monitoring immediately.
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+    const esp_err_t cellular_status = cellular_link_init();
+    if (cellular_status != ESP_OK) {
+        ESP_LOGW("app_main", "Cellular link unavailable: %s", esp_err_to_name(cellular_status));
+        cellular_diagnostics_record("LINK_UNAVAILABLE");
+    }
+
     temp_humidity_sensor_init();
     mmwave_sensor_init();
     const bool thermal_camera_ready = thermal_camera_init();
-    usb_telemetry_init();
 
     xQueueAIFrame = xQueueCreate(2, sizeof(camera_fb_t *));
     xQueueUSBFrame = xQueueCreate(2, sizeof(camera_fb_t *));
@@ -116,6 +155,7 @@ extern "C" void app_main()
     bool face_detected_since_telemetry = false;
     TickType_t last_sensor_read = 0;
     TickType_t last_stack_report = xTaskGetTickCount();
+    TickType_t last_driver_report = 0;
 
     while (true)
     {
@@ -149,8 +189,14 @@ extern "C" void app_main()
             }
         }
 
-        if (setup_mode_button_pressed())
+        if (setup_requested_during_probe || setup_mode_button_pressed())
             enter_setup_mode();  // blocks until confirmed
+
+        const BeaconStatus driver = beacon_tracker_status();
+        if (xTaskGetTickCount() - last_driver_report >= pdMS_TO_TICKS(500)) {
+            usb_telemetry_send_driver_status(driver, TelemetryPowerState::Active);
+            last_driver_report = xTaskGetTickCount();
+        }
 
         // ESP-WHO exposes face detection as a one-shot flag. Preserve any
         // detection until the next telemetry sample instead of losing it
@@ -178,7 +224,7 @@ extern "C" void app_main()
                                face_detected_since_telemetry,
                                mmwave_presence_detected,
                                thermal_heat_detected,
-                               human_presence_detected);
+                               human_presence_detected, driver);
 
             face_detected_since_telemetry = false;
         }
@@ -190,6 +236,8 @@ extern "C" void app_main()
             last_stack_report = xTaskGetTickCount();
         }
 
+        // Finish a queued SMS/horn before removing power from the primary.
+        driver_power_sleep_if_present(cellular_link_busy());
         vTaskDelay(pdMS_TO_TICKS(20)); // Keep USB commands and setup responsive.
     }
 }

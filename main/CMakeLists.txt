@@ -1,8 +1,9 @@
 idf_component_register(
-    SRCS "cellular_diagnostics.cpp" "boot_button.cpp" "cellular_link.cpp" "tuned_face_detection.cpp" "thermal_camera.cpp" "mlx90640/MLX90640_API.c" "mmwave_sensor.cpp" "usb_camera_stream.cpp" "positioning_preview.cpp" "usb_telemetry.cpp" "app_main.cpp" "setup_mode.cpp" "temp_humidity_sensor.cpp"
+    SRCS "beacon_tracker.cpp" "driver_power.cpp" "cellular_diagnostics.cpp" "boot_button.cpp" "cellular_link.cpp" "tuned_face_detection.cpp" "thermal_camera.cpp" "mlx90640/MLX90640_API.c" "mmwave_sensor.cpp" "usb_camera_stream.cpp" "positioning_preview.cpp" "usb_telemetry.cpp" "app_main.cpp" "setup_mode.cpp" "temp_humidity_sensor.cpp"
     INCLUDE_DIRS "." "../shared"
     EMBED_TXTFILES "setup_positioning.js"
     PRIV_REQUIRES
+        bt
         modules
         esp_driver_gpio
         esp_driver_rmt

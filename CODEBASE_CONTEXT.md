@@ -32,6 +32,8 @@ idf.py -p COM4 flash monitor
 | --- | --- |
 | `main/app_main.cpp` | Firmware entry point; initializes setup support, camera/face detection, and the main LED loop. |
 | `main/boot_button.cpp` | Debounced BOOT press/release for one UART horn request; startup-held presses ignored. |
+| `main/beacon_tracker.cpp` | Passive BLE fob scanning, median RSSI, driver NEAR/AWAY hysteresis and timeout. |
+| `main/driver_power.cpp` | Driver-triggered deep sleep, timed beacon probes and BOOT wakeup. |
 | `main/cellular_link.cpp` | UART2 SMS worker, acknowledgement/result logging, busy guard and timeouts. |
 | `main/cellular_diagnostics.cpp` | Thread-safe last-eight-event history, sent over native USB as BSMC JSON snapshots. |
 | `shared/cellular_protocol.h` | Shared bounded framing and phone/message validation. |
@@ -63,6 +65,88 @@ idf.py -p COM4 flash monitor
    - sets GPIO 2 high when any of those signals indicates presence and low otherwise.
 
 These presence signals drive the LED and USB telemetry; they do not automatically trigger SMS.
+
+### Driver presence and deep sleep
+
+`main/beacon_tracker.cpp` tracks the supplied iBeacon card at the fixed BLE address
+`78:9f:38:08:0b:e5`. It follows the supplied passive-scanning example: interval
+`0x50` (50 ms), window `0x30` (30 ms), duplicate filtering disabled, a six-sample
+upper median, and at least three fresh advertisements before qualifying NEAR.
+Median RSSI at or above -75 dBm means NEAR; below -80 dBm means AWAY. The band
+between these values retains the previous decision. Five seconds without a target
+advertisement means AWAY; stale samples are discarded when the fob returns.
+An unobserved fob and a failed scanner never qualify the device for sleep.
+`driver_checking` is true during initial qualification: telemetry retains the
+last confirmed NEAR state across timer wakeups and shows "checking" until fresh
+samples or a timeout resolve the probe. A retained NEAR flag never qualifies for
+sleep while `driver_checking` is true.
+
+NEAR enables deep sleep when no SMS/horn request is in progress and neither
+button is held. Opening the telemetry viewer never inhibits sleep. BLE cannot receive during deep sleep, so the primary wakes on an
+RTC timer after eight seconds and scans again before initializing the camera,
+AI, other sensors or cellular worker. A fresh NEAR result returns to sleep;
+otherwise, five seconds without the fob ends in normal monitoring. A probe may
+collect advertisements for up to ten seconds to obtain three fresh samples from
+a slower fob without unnecessarily starting the camera/sensors. Timer probes preserve
+NEAR hysteresis but still require at least three new advertisements. Departure
+confirmation can take the eight-second sleep interval plus reboot and five
+seconds without the fob; sensor initialization follows. Each probe stays awake for at least 1.5 seconds to allow USB
+enumeration. A power-on/reset starts normal monitoring, with NEAR detected by the
+background scanner subsequently enabling sleep.
+
+BOOT (GPIO0) can wake the primary immediately. Releasing that sleep-waking press
+requests the normal horn chirp, and the primary stays awake for at least 30
+seconds. A BOOT button held on a normal power-on remains ignored until released.
+The setup button (GPIO38) is not an RTC wake pin: hold it through the next timed
+probe to enter setup. The portal keeps the main task active until confirmation.
+
+The viewer displays **Driver present**, median RSSI and the announced power state.
+Both `BSMT` samples and separate `BSMP` JSON packets carry `driver_present`,
+`beacon_available`, `beacon_rssi_valid`, `beacon_rssi_dbm`, `driver_checking`, and
+`power_state` (`active` in full sensor samples). `BSMP` packets also
+carry `deep_sleep_pending` and `beacon_recheck_ms` (8000), and are sent every
+500 ms while awake, including probes. No sensor readings are fabricated for a
+probe. Native USB disconnects during deep sleep; the viewer retries the same COM
+port automatically, including when started during sleep, without resending SMS.
+The viewer passively retains **Driver present: YES / Deep sleep mode** across USB
+gaps and short beacon probes. `power_state` distinguishes `sleep_pending`,
+`beacon_probe`, and `active`; probe packets do not temporarily relabel sleep mode
+as full monitoring. A confirmed AWAY report changes the display to **Driver
+present: NO / Active** and starts monitoring. Sleep is announced only after BLE
+shutdown succeeds. If a late SMS/button cancels entry, an active report replaces
+the sleep announcement. Manual horn/SMS/setup and BLE errors can defer sleep,
+and the viewer reflects active mode in those cases.
+
+The sleep interval is defined once by `DRIVER_SLEEP_INTERVAL_MS` in
+`main/driver_power.h`, shared by the RTC timer, logging and telemetry. Eight
+seconds asleep with the previously observed roughly eight seconds awake targets
+about 50% sleep time; actual duty cycle varies with beacon arrival and boot time.
+
+The viewer sends no heartbeat or other automatic commands. Old `VIEWER_ALIVE`
+commands are ignored by the firmware and cannot inhibit sleep. `SEND_SMS`
+received during a probe remains pending until the cellular worker is initialized
+and the main loop consumes it. This explicit user action can defer sleep until
+completed. Restart an already running viewer after updating its Python source.
+The displayed sleep state is the last announced state: USB is powered off during
+actual deep sleep, so there is no live telemetry in that interval. After 15
+seconds without packets the display adds the age of the last report without
+erasing the confirmed flag. Sleep and a physical unplug cannot be distinguished
+from USB silence alone; reconnect status identifies this uncertainty.
+
+RSSI is proximity evidence, not a calibrated distance in meters. Tune the MAC,
+threshold and hysteresis constants in `beacon_tracker.cpp` for the actual fob and
+vehicle, and verify the card uses a fixed advertising address. The absence
+timeout is five seconds; the probe must receive at least three
+advertisements before returning to sleep. Deep sleep reduces primary MCU
+consumption; it does not switch off the externally powered sensors, secondary
+board or modem. Actual current savings require measurement on the hardware.
+
+BLE/Bluedroid and legacy BLE scanning are enabled in `sdkconfig` and
+`sdkconfig.defaults`. Explicit deep sleep does not require `CONFIG_PM_ENABLE`.
+Host checks: `python tests/run_beacon_tests.py --zig`,
+`python tests/run_cellular_tests.py --zig`, and
+`python -m unittest discover -s tools -p 'test_*.py'` (use `.venv-cell/Scripts/python.exe`
+for the project-local Zig compiler).
 
 The main task has an 8192-byte stack (`sdkconfig` and `sdkconfig.defaults`). Its
 minimum free stack is logged every 60 seconds in normal mode. Telemetry formatting
@@ -107,11 +191,11 @@ face boxes may be visible in the preview.
 
 ### Manual cellular SMS test
 
-The firmware remains in normal active mode. The dashboard's **Send SMS** button
+While the firmware is awake, the dashboard's **Send SMS** button
 sends `SEND_SMS\n` over native USB. The primary polls for complete commands without
 blocking and ignores unknown or malformed lines. BOOT (GPIO0) no longer triggers
 an SMS; a debounced press/release now requests one horn chirp on the secondary.
-Driver-presence toggling and deep sleep have been removed.
+Driver-presence deep sleep is controlled automatically by the BLE fob, as described above.
 
 The primary reads and normalizes only `bsm_cfg/phone`, then queues
 `SEND_SMS|number|message` through UART2 TX39/RX40 at 115200 8N1. A worker logs the

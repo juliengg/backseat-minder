@@ -2,12 +2,133 @@
 
 import itertools
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import serial
 
 from usb_telemetry_viewer import detection_statuses, update_detection_labels, regression_line
 from usb_telemetry_viewer import cellular_view, update_cellular_panel
 from usb_telemetry_viewer import SmsControl
+from usb_telemetry_viewer import UsbConnection, driver_view, DriverDisplay
+from usb_telemetry_viewer import main
+
+
+class DriverTelemetryTests(unittest.TestCase):
+    def test_viewer_opens_while_device_is_already_asleep(self):
+        device = Mock(is_open=False)
+        with patch("usb_telemetry_viewer.serial.Serial", return_value=device), \
+                patch("usb_telemetry_viewer.show_viewer", return_value=0) as show, \
+                patch("sys.argv", ["viewer", "--port", "COM4"]), patch("builtins.print"):
+            self.assertEqual(main(), 0)
+        self.assertEqual(device.port, "COM4")
+        self.assertFalse(device.dtr)
+        self.assertFalse(device.rts)
+        show.assert_called_once_with(device)
+        device.open.assert_not_called()
+        device.close.assert_called_once()
+
+    def test_driver_flag_rssi_and_power(self):
+        sample = {"driver_present": True, "beacon_available": True,
+                  "beacon_rssi_valid": True, "beacon_rssi_dbm": -65,
+                  "deep_sleep_pending": True}
+        text, color = driver_view(sample)
+        self.assertIn("YES", text)
+        self.assertIn("-65 dBm", text)
+        self.assertIn("Deep sleep", text)
+        self.assertEqual(color, "green")
+        sample["driver_present"] = False
+        sample["beacon_rssi_valid"] = False
+        sample["deep_sleep_pending"] = False
+        text, color = driver_view(sample)
+        self.assertIn("NO", text)
+        self.assertIn("no fresh", text)
+        self.assertNotIn("-65", text)
+        self.assertIn("Active", text)
+
+    def test_legacy_and_failed_ble_are_unknown(self):
+        for sample in ({}, {"driver_present": False, "beacon_available": False},
+                       {"driver_present": "false"}):
+            self.assertIn("unknown", driver_view(sample)[0])
+
+    def test_initial_and_wake_probes_never_report_an_unconfirmed_absence(self):
+        for previous in (False, True):
+            text, color = driver_view({"driver_present": previous,
+                "driver_checking": True, "beacon_available": True})
+            self.assertIn("checking", text)
+            self.assertNotIn("NO", text)
+            self.assertEqual(color, "gray")
+            if previous:
+                self.assertIn("YES (last confirmed)", text)
+
+    def test_legacy_keepawake_field_is_ignored(self):
+        text, _ = driver_view({"driver_present": True, "beacon_available": True,
+                               "telemetry_active": True})
+        self.assertIn("Active", text)
+        self.assertNotIn("telemetry", text)
+
+    def test_sleep_display_survives_usb_gap_then_wake_probe_then_away(self):
+        display = DriverDisplay()
+        display.observe({"driver_present": True, "beacon_available": True,
+            "driver_checking": False, "deep_sleep_pending": True,
+            "power_state": "sleep_pending"}, 0)
+        # No USB packets during real deep sleep: keep the last confirmed state.
+        for now in (1, 5, 20):
+            text, _ = display.view(now)
+            self.assertIn("YES", text)
+            self.assertIn("Deep sleep", text)
+            self.assertNotIn("unknown", text)
+        self.assertIn("Last report", display.view(20)[0])
+        display.observe({"driver_present": True, "driver_checking": True,
+            "beacon_available": True, "power_state": "beacon_probe"}, 21)
+        self.assertIn("YES", display.view(21)[0])
+        self.assertIn("Deep sleep", display.view(21)[0])
+        display.observe({"driver_present": False, "driver_checking": False,
+            "beacon_available": True, "power_state": "active"}, 26)
+        self.assertIn("NO", display.view(26)[0])
+        self.assertIn("Active", display.view(26)[0])
+        self.assertNotIn("Deep sleep", display.view(26)[0])
+
+    def test_viewer_started_during_sleep_probe_uses_retained_presence(self):
+        display = DriverDisplay()
+        display.observe({"driver_present": True, "driver_checking": True,
+            "beacon_available": True, "power_state": "beacon_probe"}, 0)
+        text, _ = display.view(0)
+        self.assertIn("YES", text)
+        self.assertIn("Deep sleep", text)
+
+    def test_actual_active_override_is_not_mislabeled_as_sleep(self):
+        text, _ = driver_view({"driver_present": True, "beacon_available": True,
+                               "power_state": "active"})
+        self.assertIn("YES", text)
+        self.assertIn("Active", text)
+        self.assertNotIn("Deep sleep", text)
+
+    def test_reconnect_backoff_and_data_without_resending_commands(self):
+        device = Mock(is_open=True, in_waiting=3)
+        device.read.side_effect = serial.SerialException("asleep")
+        device.close.side_effect = lambda: setattr(device, "is_open", False)
+        connection = UsbConnection(device)
+        self.assertIsNone(connection.read_available(0))
+        device.open.assert_not_called()
+        self.assertIsNone(connection.read_available(0.4))
+        device.open.assert_not_called()
+        device.open.side_effect = serial.SerialException("not enumerated")
+        self.assertIsNone(connection.read_available(0.5))
+        self.assertEqual(device.open.call_count, 1)
+        device.open.side_effect = lambda: setattr(device, "is_open", True)
+        device.read.side_effect = None
+        device.read.return_value = b"BSM"
+        self.assertEqual(connection.read_available(1), b"BSM")
+        self.assertEqual(connection.generation, 1)
+        device.write.assert_not_called()
+
+    def test_viewing_is_passive_and_never_writes_keepawake_commands(self):
+        device = Mock(is_open=True, in_waiting=0)
+        connection = UsbConnection(device)
+        self.assertEqual(connection.read_available(0), b"")
+        self.assertEqual(connection.read_available(0.9), b"")
+        for now in (1, 5, 30):
+            self.assertEqual(connection.read_available(now), b"")
+        device.write.assert_not_called()
 
 
 class SmsControlTests(unittest.TestCase):

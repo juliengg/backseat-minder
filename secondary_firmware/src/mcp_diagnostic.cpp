@@ -11,26 +11,109 @@ namespace {
 constexpr uint8_t CANSTAT = 0x0e, CANCTRL = 0x0f;
 constexpr uint8_t CNF3 = 0x28, CNF2 = 0x29, CNF1 = 0x2a;
 uint32_t spiHz = CAN_SPI_CLOCK_HZ;
+bool softwareSpi = false;
+
+uint8_t transferByte(uint8_t outgoing) {
+  if (!softwareSpi) return SPI.transfer(outgoing);
+  uint8_t incoming = 0;
+  // Mode 0: change MOSI with SCK low, sample MISO with SCK high.
+  for (uint8_t mask = 0x80; mask; mask >>= 1) {
+    digitalWrite(CAN_MOSI_PIN, (outgoing & mask) ? HIGH : LOW);
+    delayMicroseconds(25);
+    digitalWrite(CAN_SCK_PIN, HIGH);
+    delayMicroseconds(25);
+    incoming = (incoming << 1) | (digitalRead(CAN_MISO_PIN) == HIGH);
+    digitalWrite(CAN_SCK_PIN, LOW);
+  }
+  return incoming;
+}
+
+void selectController() {
+  if (!softwareSpi) SPI.beginTransaction(SPISettings(spiHz, MSBFIRST, SPI_MODE0));
+  digitalWrite(CAN_CS_PIN, LOW);
+  if (softwareSpi) delayMicroseconds(25);
+}
+
+void releaseController() {
+  digitalWrite(CAN_CS_PIN, HIGH);
+  if (softwareSpi) delayMicroseconds(25);
+  else SPI.endTransaction();
+}
 
 uint8_t readReg(uint8_t address) {
-  SPI.beginTransaction(SPISettings(spiHz, MSBFIRST, SPI_MODE0));
-  digitalWrite(CAN_CS_PIN, LOW);
-  SPI.transfer(0x03);
-  SPI.transfer(address);
-  const uint8_t value = SPI.transfer(0);
-  digitalWrite(CAN_CS_PIN, HIGH);
-  SPI.endTransaction();
+  selectController();
+  transferByte(0x03);
+  transferByte(address);
+  const uint8_t value = transferByte(0);
+  releaseController();
   return value;
 }
 
 void writeReg(uint8_t address, uint8_t value) {
-  SPI.beginTransaction(SPISettings(spiHz, MSBFIRST, SPI_MODE0));
-  digitalWrite(CAN_CS_PIN, LOW);
-  SPI.transfer(0x02);
-  SPI.transfer(address);
-  SPI.transfer(value);
+  selectController();
+  transferByte(0x02);
+  transferByte(address);
+  transferByte(value);
+  releaseController();
+}
+
+void sampleIdleMiso() {
+  unsigned high = 0, transitions = 0;
+  int last = digitalRead(CAN_MISO_PIN);
+  for (unsigned i = 0; i < 1000; ++i) {
+    const int value = digitalRead(CAN_MISO_PIN);
+    high += value == HIGH;
+    transitions += value != last;
+    last = value;
+    delayMicroseconds(10);
+  }
+  Serial.printf("Idle MISO (CS HIGH, SCK LOW): %u/1000 HIGH, %u transitions\n", high, transitions);
+}
+
+void softwareSpiTest() {
+  // Completely detach the hardware peripheral before testing ordinary GPIO.
+  SPI.end();
+  pinMode(CAN_CS_PIN, OUTPUT);
   digitalWrite(CAN_CS_PIN, HIGH);
-  SPI.endTransaction();
+  pinMode(CAN_SCK_PIN, OUTPUT);
+  digitalWrite(CAN_SCK_PIN, LOW);
+  pinMode(CAN_MOSI_PIN, OUTPUT);
+  digitalWrite(CAN_MOSI_PIN, LOW);
+  pinMode(CAN_MISO_PIN, INPUT);
+  softwareSpi = true;
+  Serial.println("\n--- SOFTWARE SPI: 25 us half-period, no SPI peripheral/library ---");
+  sampleIdleMiso();
+  selectController();
+  transferByte(0xc0); // MCP2515 RESET: enters configuration mode.
+  releaseController();
+  delay(10);
+  unsigned modeFailures = 0;
+  for (unsigned i = 0; i < 16; ++i) {
+    const uint8_t status = readReg(CANSTAT), control = readReg(CANCTRL);
+    if (i < 8) Serial.printf("Reset read %u: CANSTAT=0x%02X CANCTRL=0x%02X (expected 0x80/0x87)\n", i, status, control);
+    if ((status & 0xee) != 0x80 || control != 0x87) ++modeFailures;
+  }
+  if (modeFailures) {
+    Serial.printf("SOFTWARE SPI: FAIL (%u/16 reset-read pairs incorrect); write test skipped.\n", modeFailures);
+  } else {
+    unsigned failures = 0;
+    const uint8_t patterns[] = {0x00, 0x55, 0xaa, 0xff};
+    // TXB0 data bytes are full-width writable storage. Never set TXREQ.
+    for (unsigned round = 0; round < 4; ++round) {
+      for (uint8_t address = 0x36; address <= 0x3d; ++address) {
+        for (uint8_t pattern : patterns) {
+          writeReg(address, pattern);
+          if (readReg(address) != pattern) ++failures;
+        }
+      }
+    }
+    Serial.printf("SOFTWARE SPI: %s (%u/128 data-register write/read mismatches)\n", failures ? "FAIL" : "PASS", failures);
+  }
+  sampleIdleMiso();
+  // No mode changes or transmit requests in this test. Restore the peripheral
+  // solely so another 'r' command can repeat the hardware tests.
+  softwareSpi = false;
+  SPI.begin(CAN_SCK_PIN, CAN_MISO_PIN, CAN_MOSI_PIN, CAN_CS_PIN);
 }
 
 bool registerTest(MCP2515 &controller) {
@@ -115,6 +198,7 @@ void runTests() {
     const auto stopped = controller.setConfigMode();
     Serial.printf("Final config mode request=%d CANSTAT=0x%02X\n", stopped, readReg(CANSTAT));
   }
+  softwareSpiTest();
   Serial.println("Done. Send 'r' over USB serial or reset secondary to repeat.");
 }
 }
@@ -123,6 +207,7 @@ void mcpDiagnosticSetup() {
   Serial.begin(DEBUG_BAUD);
   pinMode(CAN_CS_PIN, OUTPUT);
   digitalWrite(CAN_CS_PIN, HIGH);
+  pinMode(CAN_INT_PIN, INPUT);
   SPI.begin(CAN_SCK_PIN, CAN_MISO_PIN, CAN_MOSI_PIN, CAN_CS_PIN);
   delay(1000);
   runTests();

@@ -2,14 +2,21 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "beacon_tracker.h"
 
 // Starts the ESP32-S3 native USB Serial/JTAG channel used for optional
 // development telemetry. Failure to connect USB never affects device behavior.
 void usb_telemetry_init();
 
-// Nonblocking, bounded USB command poll. Only SEND_SMS followed by LF (or CRLF)
-// requests the saved-contact test; repeated commands in one read are coalesced.
-// Call from the main task only. No command supplies a phone number or SMS body.
+// Nonblocking, bounded command poll; also used during beacon-only wake probes.
+// SEND_SMS remains pending until consumed below, so a probe cannot lose or
+// execute an SMS request prematurely. Viewer traffic never inhibits sleep.
+// Call command functions from the main task only.
+void usb_telemetry_poll_commands();
+bool usb_telemetry_sms_pending();
+
+// Poll and consume a pending SEND_SMS request; coalesce repeats within a read.
+// No command supplies a phone number or SMS body.
 bool usb_telemetry_sms_requested();
 
 // Sends a BSMT JSON sensor sample and a BSMC cellular summary/history snapshot.
@@ -17,7 +24,12 @@ bool usb_telemetry_sms_requested();
 void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool temperature_humidity_valid, bool face_detected,
                         bool mmwave_presence_detected, bool thermal_heat_detected,
-                        bool human_presence_detected);
+                        bool human_presence_detected, const BeaconStatus &driver);
+
+// BSMP is also sent during BLE-only wake probes, before sensors are started.
+enum class TelemetryPowerState { Active, BeaconProbe, SleepPending };
+void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPowerState power);
+void usb_telemetry_flush();
 
 // Sends one JPEG frame with a binary BSMF header. This is used only by the
 // development camera viewer connected to native USB.

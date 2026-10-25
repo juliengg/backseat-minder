@@ -325,6 +325,12 @@ static void test_button() {
         assert(!sample(1, 10000)); assert(!sample(1, 49999));
         assert(sample(1, 1)); assert(!sample(1, 50000));
     }
+    test_button_level = 0; boot_button_init(true);
+    assert(!sample(0, 1000000));
+    assert(!sample(1, 0)); assert(sample(1, 50000));
+    assert(!sample(1, 50000)); // One chirp after release of a sleep-waking press.
+    test_button_level = 1; boot_button_init(true); // Released during boot.
+    assert(sample(1, 50000)); assert(!sample(1, 50000));
 }
 
 static void test_horn() {

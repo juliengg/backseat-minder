@@ -1,4 +1,5 @@
 #include "usb_telemetry.h"
+#include "driver_power.h"
 #include "cellular_diagnostics.h"
 #include "cellular_link.h"
 #include "cellular_protocol.h"
@@ -19,6 +20,7 @@ bool s_ready = false;
 SemaphoreHandle_t s_write_mutex = nullptr;
 uint32_t s_sms_requests = 0;
 cellular::LineBuffer s_command;
+bool s_sms_pending = false;
 
 bool write_bytes(const uint8_t *data, size_t length)
 {
@@ -71,19 +73,30 @@ void usb_telemetry_init()
     }
 }
 
-bool usb_telemetry_sms_requested()
+void usb_telemetry_poll_commands()
 {
-    if (!s_ready) return false;
+    if (!s_ready) return;
     char bytes[128];
     const int count = usb_serial_jtag_read_bytes(bytes, sizeof(bytes), 0);
     bool requested = false;
     for (int i = 0; i < count; ++i) {
-        if (s_command.push(bytes[i]) == cellular::FrameEvent::Ready &&
-            strcmp(s_command.data(), "SEND_SMS") == 0) {
-            requested = true;
+        if (s_command.push(bytes[i]) == cellular::FrameEvent::Ready) {
+            if (strcmp(s_command.data(), "SEND_SMS") == 0) {
+                requested = true;
+            }
         }
     }
     if (requested) ++s_sms_requests;
+    s_sms_pending |= requested;
+}
+
+bool usb_telemetry_sms_pending() { return s_sms_pending; }
+
+bool usb_telemetry_sms_requested()
+{
+    usb_telemetry_poll_commands();
+    const bool requested = s_sms_pending;
+    s_sms_pending = false;
     return requested;
 }
 
@@ -98,7 +111,7 @@ bool usb_telemetry_host_connected()
 void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool temperature_humidity_valid, bool face_detected,
                         bool mmwave_presence_detected, bool thermal_heat_detected,
-                        bool human_presence_detected)
+                        bool human_presence_detected, const BeaconStatus &driver)
 {
     if (!usb_telemetry_host_connected() ||
         xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
@@ -107,13 +120,16 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
 
     // Shared scratch storage is protected by s_write_mutex for the entire send.
     // Keep these buffers off the caller's stack (normally the main task).
-    static char message[384];
+    static char message[512];
     const int length = snprintf(
         message, sizeof(message),
         "{\"uptime_ms\":%lld,\"face_detected\":%s,"
         "\"mmwave_presence_detected\":%s,"
         "\"heat_trace_detected\":%s,"
         "\"human_presence_detected\":%s,"
+        "\"driver_present\":%s,\"beacon_available\":%s,"
+        "\"driver_checking\":%s,\"power_state\":\"active\","
+        "\"beacon_rssi_dbm\":%d,\"beacon_rssi_valid\":%s,"
         "\"temperature_humidity_valid\":%s,\"temperature_f\":%.1f,"
         "\"humidity_percent\":%.1f}\n",
         esp_timer_get_time() / 1000,
@@ -121,6 +137,10 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
         mmwave_presence_detected ? "true" : "false",
         thermal_heat_detected ? "true" : "false",
         human_presence_detected ? "true" : "false",
+        driver.driver_present ? "true" : "false",
+        driver.available ? "true" : "false",
+        driver.checking ? "true" : "false",
+        driver.rssi_dbm, driver.rssi_valid ? "true" : "false",
         temperature_humidity_valid ? "true" : "false",
         temperature_f, humidity_percent);
 
@@ -136,6 +156,35 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
     if (cellular_length) {
         send_packet("BSMC", reinterpret_cast<const uint8_t *>(cellular), cellular_length);
     }
+    xSemaphoreGive(s_write_mutex);
+}
+
+void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPowerState power)
+{
+    if (!s_ready || xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
+    char message[320];
+    const int length = snprintf(message, sizeof(message),
+        "{\"uptime_ms\":%lld,\"driver_present\":%s,\"beacon_available\":%s,"
+        "\"driver_checking\":%s,\"power_state\":\"%s\","
+        "\"beacon_rssi_valid\":%s,\"beacon_rssi_dbm\":%d,"
+        "\"deep_sleep_pending\":%s,\"beacon_recheck_ms\":%u}",
+        esp_timer_get_time() / 1000, driver.driver_present ? "true" : "false",
+        driver.available ? "true" : "false", driver.checking ? "true" : "false",
+        power == TelemetryPowerState::BeaconProbe ? "beacon_probe" :
+            power == TelemetryPowerState::SleepPending ? "sleep_pending" : "active",
+        driver.rssi_valid ? "true" : "false",
+        driver.rssi_dbm, power == TelemetryPowerState::SleepPending ? "true" : "false",
+        static_cast<unsigned>(DRIVER_SLEEP_INTERVAL_MS));
+    if (length > 0 && length < static_cast<int>(sizeof(message)))
+        send_packet("BSMP", reinterpret_cast<const uint8_t *>(message), length);
+    xSemaphoreGive(s_write_mutex);
+}
+
+void usb_telemetry_flush()
+{
+    if (!s_ready || xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    // Bounded so an absent USB host never prevents standalone sleep.
+    usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
     xSemaphoreGive(s_write_mutex);
 }
 
