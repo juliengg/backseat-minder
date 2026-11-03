@@ -1,4 +1,5 @@
 #include "setup_mode.h"
+#include "beacon_tracker.h"
 #include "cellular_protocol.h"
 #include "alert_message.h"
 #include "positioning_preview.h"
@@ -13,6 +14,7 @@
 #include "nvs.h"
 #include "lwip/ip4_addr.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include "lwip/err.h"
@@ -50,10 +52,14 @@ static const char *TAG = "setup_mode";
 static volatile bool setup_confirmed = false;
 static httpd_handle_t server = NULL;
 static TaskHandle_t dns_task_handle = NULL;
+static int s_dns_socket = -1;
 static esp_netif_t *s_ap_netif = NULL;
 static bool s_netif_inited = false;
 static bool s_eventloop_inited = false;
+static bool s_wifi_inited = false;
+static bool s_wifi_started = false;
 extern const char positioning_script[] asm("_binary_setup_positioning_js_start");
+extern const char keyboard_script[] asm("_binary_setup_keyboard_js_start");
 
 // ─── NVS Helpers ───────────────────────────────────────────────────────
 
@@ -257,7 +263,7 @@ static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
         ".field input[type=tel],.field input[type=text]{"
           "width:100%%;background:#1a1a1a;border:1px solid var(--border);"
           "border-radius:var(--radius);padding:11px 14px;"
-          "color:var(--text);font-family:'DM Sans',sans-serif;font-size:0.95rem;"
+          "color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;"
           "outline:none;transition:border-color 0.2s,box-shadow 0.2s;"
           "appearance:none;"
         "}"
@@ -283,8 +289,9 @@ static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
         ".toggle-text .desc em{color:var(--danger);font-style:normal;font-weight:600;}"
         ".positioning{margin-bottom:24px;}"
         ".preview{margin-top:12px;}"
-        ".preview img{display:block;width:100%%;height:auto;aspect-ratio:4/3;"
-          "object-fit:contain;border-radius:var(--radius);background:#000;}"
+        ".preview-frame{aspect-ratio:4/3;border-radius:var(--radius);background:#000;overflow:hidden;}"
+        ".preview img{display:block;width:100%%;height:100%%;object-fit:contain;}"
+        ".preview img[hidden]{display:block!important;visibility:hidden;}"
         ".preview p{font-size:0.78rem;color:#aaa;line-height:1.5;margin-top:8px;}"
         "button[type=submit]{"
           "width:100%%;margin-top:28px;"
@@ -297,7 +304,8 @@ static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
         "button[type=submit]:hover{opacity:0.9;}"
         "button[type=submit]:active{transform:scale(0.98);}"
         ".required-note{font-size:0.72rem;color:var(--muted);margin-top:18px;text-align:center;}"
-        "</style><script src='/positioning.js' defer></script></head><body>"
+        "</style><script src='/keyboard.js' defer></script>"
+        "<script src='/positioning.js' defer></script></head><body>"
         "<div class='card'>"
           "<div class='header'><div class='dot'></div><h1>Backseat Minder</h1></div>"
           "<p class='subtitle'>Configure your device. Settings are saved on-board<br>and restored after reboot.</p>"
@@ -311,7 +319,9 @@ static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
               "</div>"
             "</label>"
             "<div class='preview' id='positioning-preview' hidden>"
-              "<img id='positioning-image' width='320' height='240' hidden alt='Live camera positioning preview'>"
+              "<div class='preview-frame'>"
+                "<img id='positioning-image' width='320' height='240' hidden alt='Live camera positioning preview'>"
+              "</div>"
               "<p id='positioning-status' role='status' aria-live='polite'>Waiting for camera...</p>"
               "<p>Adjust the device until the back seats are in view. Preview refreshes once per second.</p>"
             "</div>"
@@ -322,12 +332,12 @@ static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
           "<p class='section-label'>Your details</p>"
           "<div class='field'>"
             "<label for='name'>Name <span style='color:#ff6b6b'>*</span></label>"
-            "<input type='text' id='name' name='name' autocomplete='name' maxlength='63' required placeholder='Your name' value='%s'>"
+            "<input type='text' id='name' name='name' autocomplete='name' enterkeyhint='done' maxlength='63' required placeholder='Your name' value='%s'>"
             "<small>Use letters without accents. Spaces, apostrophes and hyphens are welcome.</small>"
           "</div>"
           "<div class='field'>"
             "<label for='phone'>Mobile number <span style='color:#ff6b6b'>*</span></label>"
-            "<input type='tel' id='phone' name='phone' placeholder='+1 555 000 0000' value='%s'>"
+            "<input type='tel' id='phone' name='phone' enterkeyhint='done' placeholder='+1 555 000 0000' value='%s'>"
           "</div>"
 
           "<hr class='divider'>"
@@ -335,15 +345,15 @@ static bool build_portal_html(char *buf, size_t buf_size, const bsm_config_t *cf
           "<p class='section-label'>Emergency contacts <span class='optional-tag'>optional</span></p>"
           "<div class='field'>"
             "<label for='ec1'>Contact 1</label>"
-            "<input type='tel' id='ec1' name='ec1' placeholder='+1 555 000 0001' value='%s'>"
+            "<input type='tel' id='ec1' name='ec1' enterkeyhint='done' placeholder='+1 555 000 0001' value='%s'>"
           "</div>"
           "<div class='field'>"
             "<label for='ec2'>Contact 2</label>"
-            "<input type='tel' id='ec2' name='ec2' placeholder='+1 555 000 0002' value='%s'>"
+            "<input type='tel' id='ec2' name='ec2' enterkeyhint='done' placeholder='+1 555 000 0002' value='%s'>"
           "</div>"
           "<div class='field'>"
             "<label for='ec3'>Contact 3</label>"
-            "<input type='tel' id='ec3' name='ec3' placeholder='+1 555 000 0003' value='%s'>"
+            "<input type='tel' id='ec3' name='ec3' enterkeyhint='done' placeholder='+1 555 000 0003' value='%s'>"
           "</div>"
 
           "<hr class='divider'>"
@@ -398,6 +408,7 @@ static const char *CONFIRM_HTML =
 static void dns_server_task(void *pvParameters)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    s_dns_socket = sock;
 
     struct sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
@@ -469,6 +480,13 @@ static esp_err_t positioning_script_get_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/javascript; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, positioning_script, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t keyboard_script_get_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/javascript; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, keyboard_script, HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t positioning_get_handler(httpd_req_t *req)
@@ -583,6 +601,7 @@ static httpd_handle_t start_webserver(void)
     httpd_uri_t confirm = { "/confirm",HTTP_POST, confirm_post_handler, NULL };
     httpd_uri_t preview = { "/positioning.jpg", HTTP_GET, positioning_get_handler, NULL };
     httpd_uri_t script = { "/positioning.js", HTTP_GET, positioning_script_get_handler, NULL };
+    httpd_uri_t keyboard = { "/keyboard.js", HTTP_GET, keyboard_script_get_handler, NULL };
 
     // ── Captive portal detection endpoints ─────────────────────
     // Android / Chrome
@@ -610,6 +629,7 @@ static httpd_handle_t start_webserver(void)
     httpd_register_uri_handler(hdl, &confirm);
     httpd_register_uri_handler(hdl, &preview);
     httpd_register_uri_handler(hdl, &script);
+    httpd_register_uri_handler(hdl, &keyboard);
     httpd_register_uri_handler(hdl, &and1);
     httpd_register_uri_handler(hdl, &and2);
     httpd_register_uri_handler(hdl, &and3);
@@ -628,21 +648,24 @@ static httpd_handle_t start_webserver(void)
 
 // ─── AP START ────────────────────────────────────────────────
 
-static void start_ap(void)
+static esp_err_t start_ap(void)
 {
     // esp_netif_init and esp_event_loop_create_default are one-time inits —
     // calling them again after teardown causes silent failures on ESP-IDF v5.
     // We track whether they have been called and skip if already done.
     if (!s_netif_inited) {
-        ESP_ERROR_CHECK(esp_netif_init());
+        const esp_err_t err = esp_netif_init();
+        if (err != ESP_OK) return err;
         s_netif_inited = true;
     }
     if (!s_eventloop_inited) {
-        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        const esp_err_t err = esp_event_loop_create_default();
+        if (err != ESP_OK) return err;
         s_eventloop_inited = true;
     }
 
     s_ap_netif = esp_netif_create_default_wifi_ap();
+    if (!s_ap_netif) return ESP_ERR_NO_MEM;
     esp_netif_t *ap_netif = s_ap_netif;
 
     esp_netif_ip_info_t ip_info;
@@ -650,13 +673,25 @@ static void start_ap(void)
     ip_info.gw.addr      = ipaddr_addr(SETUP_IP);
     ip_info.netmask.addr = ipaddr_addr("255.255.255.0");
 
-    esp_netif_dhcps_stop(ap_netif);
-    esp_netif_set_ip_info(ap_netif, &ip_info);
-    esp_netif_dhcps_start(ap_netif);
+    esp_err_t err = esp_netif_dhcps_stop(ap_netif);
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) return err;
+    err = esp_netif_set_ip_info(ap_netif, &ip_info);
+    if (err != ESP_OK) return err;
+    err = esp_netif_dhcps_start(ap_netif);
+    if (err != ESP_OK) return err;
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    // This AP serves a setup form and occasional preview frames. Bound its
+    // buffers so the camera and network tasks retain internal RAM headroom.
+    cfg.static_rx_buf_num = 6;
+    cfg.dynamic_rx_buf_num = 16;
+    cfg.dynamic_tx_buf_num = 16;
+    cfg.rx_ba_win = 6;
+    err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) return err;
+    s_wifi_inited = true;
+    err = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (err != ESP_OK) return err;
 
     wifi_config_t wifi_config = {};
     strncpy((char *)wifi_config.ap.ssid,     WIFI_SSID, sizeof(wifi_config.ap.ssid));
@@ -666,12 +701,45 @@ static void start_ap(void)
     wifi_config.ap.max_connection = 4;
     wifi_config.ap.authmode       = WIFI_AUTH_OPEN;
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    err = esp_wifi_set_config(WIFI_IF_AP, &wifi_config);
+    if (err != ESP_OK) return err;
+    err = esp_wifi_start();
+    if (err != ESP_OK) return err;
+    s_wifi_started = true;
 
-    xTaskCreate(dns_server_task, "dns_server", 4096, NULL, 5, &dns_task_handle);
+    if (xTaskCreate(dns_server_task, "dns_server", 4096, NULL, 5,
+                    &dns_task_handle) != pdPASS) return ESP_ERR_NO_MEM;
 
     ESP_LOGI(TAG, "AP + DNS started");
+    return ESP_OK;
+}
+
+static void stop_ap()
+{
+    if (dns_task_handle) {
+        vTaskDelete(dns_task_handle);
+        dns_task_handle = NULL;
+    }
+    if (s_dns_socket >= 0) {
+        close(s_dns_socket);
+        s_dns_socket = -1;
+    }
+    if (server) {
+        httpd_stop(server);
+        server = NULL;
+    }
+    if (s_wifi_started) {
+        esp_wifi_stop();
+        s_wifi_started = false;
+    }
+    if (s_wifi_inited) {
+        esp_wifi_deinit();
+        s_wifi_inited = false;
+    }
+    if (s_ap_netif) {
+        esp_netif_destroy_default_wifi(s_ap_netif);
+        s_ap_netif = NULL;
+    }
 }
 
 // ─── PUBLIC API ────────────────────────────────────────────────
@@ -740,9 +808,32 @@ void enter_setup_mode()
     ESP_LOGI(TAG, "Entering setup mode");
 
     setup_confirmed = false;
-    start_ap();
+    // Setup blocks the monitoring loop and reboots on completion, so scanning
+    // is unnecessary here. Deinitialize BLE before Wi-Fi needs internal RAM.
+    ESP_LOGI(TAG, "Internal RAM before BLE shutdown: %u bytes",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+    const bool beacon_stopped = beacon_tracker_stop();
+    ESP_LOGI(TAG, "Internal RAM available for setup: %u bytes (largest block %u)",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+    esp_err_t err = beacon_stopped ? start_ap() : ESP_FAIL;
+    if (err == ESP_OK) {
+        server = start_webserver();
+        if (!server) err = ESP_ERR_NO_MEM;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Setup startup failed: %s; returning to monitoring",
+                 esp_err_to_name(err));
+        stop_ap();
+        beacon_tracker_init();
+        // One failed attempt per press; holding the button must not retry in
+        // a tight loop and repeatedly allocate network resources.
+        while (gpio_get_level(BUTTON_GPIO) == 0)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        return;
+    }
     positioning_preview_set_active(true);
-    server = start_webserver();
+    ESP_LOGI(TAG, "Setup ready: join '%s' and open http://%s", WIFI_SSID, SETUP_IP);
 
     bool led_state = false;
 
@@ -754,22 +845,7 @@ void enter_setup_mode()
     }
 
     positioning_preview_set_active(false);
-    if (dns_task_handle) {
-        vTaskDelete(dns_task_handle);
-        dns_task_handle = NULL;
-    }
-
-    if (server) {
-        httpd_stop(server);
-        server = NULL;
-    }
-
-    esp_wifi_stop();
-    esp_wifi_deinit();
-    if (s_ap_netif) {
-        esp_netif_destroy_default_wifi(s_ap_netif);
-        s_ap_netif = NULL;
-    }
+    stop_ap();
     // Do NOT call esp_event_loop_delete_default() or esp_netif_deinit() here.
     // These are one-time inits on ESP-IDF v5 and cannot be safely re-initialized
     // in the same session. The event loop and netif stack stay up between

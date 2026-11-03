@@ -189,8 +189,10 @@ extern "C" void app_main()
             }
         }
 
-        if (setup_requested_during_probe || setup_mode_button_pressed())
+        if (setup_requested_during_probe || setup_mode_button_pressed()) {
+            setup_requested_during_probe = false;
             enter_setup_mode();  // blocks until confirmed
+        }
 
         const BeaconStatus driver = beacon_tracker_status();
         if (xTaskGetTickCount() - last_driver_report >= pdMS_TO_TICKS(500)) {
