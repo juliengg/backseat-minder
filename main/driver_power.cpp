@@ -39,13 +39,15 @@ bool driver_power_init()
 
 bool driver_power_timer_wakeup() { return s_timer_wakeup; }
 
-void driver_power_sleep_if_present(bool action_busy)
+static void sleep_if_allowed(bool action_busy, bool cancelled)
 {
     usb_telemetry_poll_commands();
     if (action_busy || usb_telemetry_sms_pending() ||
         esp_timer_get_time() < s_sleep_after || buttons_held()) return;
     const auto status = beacon_tracker_status();
-    if (!status.available || !status.driver_present || status.checking) return;
+    // Even suppressed probes need enough time to qualify three fresh beacon samples.
+    if (status.checking) return;
+    if (!cancelled && (!status.available || !status.driver_present)) return;
 
     // BLE cannot run in deep sleep. Restart into a BLE-only probe after 8 s.
     esp_err_t err = esp_sleep_enable_timer_wakeup(
@@ -59,7 +61,7 @@ void driver_power_sleep_if_present(bool action_busy)
         return;
     }
     usb_telemetry_poll_commands();
-    if (usb_telemetry_sms_pending() || buttons_held() || !beacon_tracker_driver_near()) return;
+    if (usb_telemetry_sms_pending() || buttons_held() || (!cancelled && !beacon_tracker_driver_near())) return;
     if (!beacon_tracker_stop()) {
         ESP_LOGE(TAG, "BLE shutdown failed; staying active");
         beacon_tracker_init();
@@ -79,7 +81,10 @@ void driver_power_sleep_if_present(bool action_busy)
     gpio_set_level(GPIO_NUM_2, 0);
     gpio_set_level(GPIO_NUM_48, 0);
     s_sleep_cookie = SLEEP_COOKIE;
-    ESP_LOGI(TAG, "Driver present: deep sleep; beacon recheck in %u seconds",
+    ESP_LOGI(TAG, "Deep sleep; beacon recheck in %u seconds",
              static_cast<unsigned>(DRIVER_SLEEP_INTERVAL_MS / 1000));
     esp_deep_sleep_start();
 }
+
+void driver_power_sleep_if_present(bool action_busy) { sleep_if_allowed(action_busy,false); }
+void driver_power_sleep_cancelled(bool action_busy) { sleep_if_allowed(action_busy,true); }

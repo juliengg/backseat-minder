@@ -7,6 +7,7 @@ static int64_t now_us = 0;
 static auto wake_cause = ESP_SLEEP_WAKEUP_UNDEFINED;
 static BeaconStatus driver{true, true, true, -60};
 static bool stop_ok = true;
+static bool cancelledProbe = false;
 static bool sms_pending = false;
 static bool sms_during_flush = false;
 static int boot_level = 1, setup_level = 1, stopped = 0, announced = 0, reinits = 0;
@@ -28,7 +29,7 @@ bool beacon_tracker_driver_near() { return driver.driver_present; }
 bool beacon_tracker_stop() { ++stopped; return stop_ok; }
 bool beacon_tracker_init(bool) { ++reinits; return true; }
 void usb_telemetry_send_driver_status(const BeaconStatus &status, TelemetryPowerState power) {
-    assert(status.driver_present);
+    assert(status.driver_present || cancelledProbe);
     if (power == TelemetryPowerState::SleepPending) {
         assert(status.available && stopped > 0 && stop_ok); ++announced;
     } else assert(power == TelemetryPowerState::Active);
@@ -79,5 +80,14 @@ int main() {
     assert(stopped == 2); // Bounded retry delay.
     wake_cause = ESP_SLEEP_WAKEUP_TIMER; now_us = 0;
     assert(!driver_power_init() && !driver_power_timer_wakeup()); // Unrelated wake.
+    now_us=0; wake_cause=ESP_SLEEP_WAKEUP_UNDEFINED; stop_ok=true;
+    driver_power_init(); now_us=2000000; driver.driver_present=false;
+    driver.available=true; driver.checking=true; cancelledProbe=true;
+    const int before=stopped;
+    driver_power_sleep_cancelled(false);
+    assert(stopped==before); // Do not sleep before a slow beacon can qualify NEAR.
+    driver.checking=false;
+    try {driver_power_sleep_cancelled(false);assert(false);} catch(Slept &) {}
+    assert(stopped==before+1 && timer_us==8000000);
     puts("PASS: driver sleep gating, wake prerequisites, 8-second timer, RTC marker, BOOT grace and shutdown failure");
 }

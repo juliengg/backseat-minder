@@ -32,9 +32,38 @@ static_assert(!link_pin(CONFIG_CAMERA_PIN_XCLK) && !link_pin(CONFIG_CAMERA_PIN_S
 QueueHandle_t requests = nullptr;
 std::atomic<bool> busy{false};
 cellular::ReceiveLineBuffer incoming;
+std::atomic<bool> alarm_requested{false};
+std::atomic<bool> cancel_pending{false};
+std::atomic<bool> cancel_requested{false};
+std::atomic<void (*)(const char *, const char *)> sms_handler{nullptr};
+int64_t last_cancel_sent = -1000000;
+
+void service_cancel() {
+    if (cancel_requested.load()) alarm_requested.store(false);
+    else if (alarm_requested.exchange(false)) {
+        const char *command="HORN_REPEAT\n";
+        if(uart_write_bytes(LINK_UART,command,strlen(command))!=static_cast<int>(strlen(command)))
+            cellular_diagnostics_record("ALARM_UART_WRITE_FAILED");
+    }
+    if (!cancel_requested.load()) return;
+    const int64_t now = esp_timer_get_time();
+    if (now - last_cancel_sent < 500000) return;
+    const char *command = "ALERT_STOP\n";
+    uart_write_bytes(LINK_UART, command, strlen(command));
+    last_cancel_sent = now;
+}
 
 bool receive_event(char *line)
 {
+    if (!strcmp(line,"ALARM_ACCEPTED")) { cellular_diagnostics_record("ALARM_ACCEPTED"); return true; }
+    if (!strncmp(line,"ALARM_RESULT|",13)) {
+        cellular_diagnostics_record(!strcmp(line+13,"OK")?"ALARM_OK":"ALARM_FAILED"); return true;
+    }
+    if (!strncmp(line,"ALERT_STOP_ERROR|",17)) { cellular_diagnostics_record("ALERT_STOP_FAILED"); return true; }
+    if (!strcmp(line, "ALERT_STOPPED")) {
+        cancel_pending.store(false); cancel_requested.store(false);
+        cellular_diagnostics_record("ALERT_STOPPED"); return true;
+    }
     constexpr const char *prefix = "RECEIVED_SMS|";
     if (!strncmp(line, "SMS_RX_STATUS|", 14)) {
         const char *status = line + 14;
@@ -61,12 +90,14 @@ bool receive_event(char *line)
         if ((c < 32 && c != '\n' && c != '\r' && c != '\t') || c == 127) return true;
     }
     cellular_diagnostics_received(sender, message);
+    if (auto handler = sms_handler.load()) handler(sender, message);
     ESP_LOGI(TAG, "Incoming SMS received; available in USB cellular log");
     return true;
 }
 
 void poll_incoming(TickType_t wait)
 {
+    service_cancel();
     char bytes[128];
     const int count = uart_read_bytes(LINK_UART, bytes, sizeof(bytes), wait);
     for (int i = 0; i < count; ++i)
@@ -81,33 +112,45 @@ void record_status(bool horn, const char *status)
     cellular_diagnostics_record(token);
 }
 
+void record_status(cellular::Action action,const char *status) {
+    if(action==cellular::Action::Sms || action==cellular::Action::Horn) {
+        record_status(action==cellular::Action::Horn,status); return;
+    }
+    char token[48];
+    snprintf(token,sizeof(token),"%s%s","CALL_",status);
+    cellular_diagnostics_record(token);
+}
+
 void transact(const cellular::Request &request)
 {
     const bool horn = request.action == cellular::Action::Horn;
-    const char *label = horn ? "Horn" : "SMS";
-    const char *ack = horn ? "HORN_ACCEPTED" : "ACCEPTED";
-    const char *ok = horn ? "HORN_RESULT|OK" : "RESULT|OK";
-    const char *error_prefix = horn ? "HORN_RESULT|ERROR|" : "RESULT|ERROR|";
+    const bool voice = request.action == cellular::Action::Call;
+    const char *label = voice ? "Call" : horn ? "Horn" : "SMS";
+    const char *ack = voice ? "CALL_ACCEPTED" : horn ? "HORN_ACCEPTED" : "ACCEPTED";
+    const char *ok = voice ? "CALL_RESULT|OK" : horn ? "HORN_RESULT|OK" : "RESULT|OK";
+    const char *error_prefix = voice ? "CALL_RESULT|ERROR|" : horn ? "HORN_RESULT|ERROR|" : "RESULT|ERROR|";
     const size_t error_length = strlen(error_prefix);
-    const uint32_t deadline = horn ? cellular::HORN_RESULT_TIMEOUT_MS : cellular::RESULT_TIMEOUT_MS;
+    const uint32_t deadline = voice ? cellular::CALL_RESULT_TIMEOUT_MS : horn ? cellular::HORN_RESULT_TIMEOUT_MS : cellular::RESULT_TIMEOUT_MS;
     const uint32_t ack_deadline = horn ? cellular::HORN_ACK_TIMEOUT_MS : cellular::ACK_TIMEOUT_MS;
     char command[cellular::MAX_FRAME + 2];
-    const int length = horn
+    const int length = voice ? snprintf(command, sizeof(command), "CALL|%s\n", request.sms.number)
+        : horn
         ? snprintf(command, sizeof(command), "%s\n", cellular::HORN_COMMAND)
         : snprintf(command, sizeof(command), "SEND_SMS|%s|%s\n", request.sms.number, request.sms.message);
     // Preserve incoming SMS and partial frames while discarding stale action replies.
     for (int i = 0; i < 16; ++i) poll_incoming(0);
     if (uart_write_bytes(LINK_UART, command, length) != length) {
         ESP_LOGE(TAG, "%s UART write failed; outcome unknown, no retry", label);
-        record_status(horn, "UART_WRITE_FAILED");
+        record_status(request.action, "UART_WRITE_FAILED");
         return;
     }
     ESP_LOGI(TAG, "%s command sent; waiting for %s", label, ack);
-    record_status(horn, "WAITING_ACK");
+    record_status(request.action, "WAITING_ACK");
     const int64_t started = esp_timer_get_time();
     bool accepted = false;
     bool ack_timed_out = false;
     while (esp_timer_get_time() - started < deadline * 1000LL) {
+        service_cancel();
         char bytes[128];
         const int count = uart_read_bytes(LINK_UART, bytes, sizeof(bytes), pdMS_TO_TICKS(20));
         bool completed = false;
@@ -115,7 +158,7 @@ void transact(const cellular::Request &request)
             const auto event = incoming.push(bytes[i]);
             if (event == cellular::FrameEvent::Invalid || event == cellular::FrameEvent::Oversized) {
                 ESP_LOGW(TAG, "Discarded invalid secondary response");
-                record_status(horn, "INVALID_RESPONSE");
+                record_status(request.action, "INVALID_RESPONSE");
             }
             if (event != cellular::FrameEvent::Ready) continue;
             if (receive_event(incoming.data())) continue;
@@ -123,18 +166,18 @@ void transact(const cellular::Request &request)
             if (strcmp(line, ack) == 0) {
                 accepted = true;
                 ESP_LOGI(TAG, "Secondary: %s", ack);
-                record_status(horn, "ACCEPTED");
+                record_status(request.action, "ACCEPTED");
             } else if (strcmp(line, ok) == 0 ||
                        (strncmp(line, error_prefix, error_length) == 0 && line[error_length])) {
                 if (accepted && strcmp(line, ok) != 0 && strcmp(line + error_length, "BUSY") == 0) {
                     // A rejection of an extra command cannot finish the active action.
                     ESP_LOGW(TAG, "Secondary: BUSY; still waiting for the accepted action");
-                    record_status(horn, "BUSY");
+                    record_status(request.action, "BUSY");
                     continue;
                 }
                 if (!accepted) ESP_LOGW(TAG, "Result arrived without acknowledgement");
                 ESP_LOGI(TAG, "Secondary: %s", line);
-                record_status(horn, strcmp(line, ok) == 0 ? "OK" : line + error_length);
+                record_status(request.action, strcmp(line, ok) == 0 ? "OK" : line + error_length);
                 completed = true;
             } else {
                 // Typed horn replies must never complete an SMS, or vice versa.
@@ -145,29 +188,28 @@ void transact(const cellular::Request &request)
         if (!accepted && !ack_timed_out && esp_timer_get_time() - started >= ack_deadline * 1000LL) {
             ack_timed_out = true;
             ESP_LOGW(TAG, "ACCEPTED timeout; check secondary power/wiring. Waiting for a possible result; no retry");
-            record_status(horn, "ACK_TIMEOUT");
+            record_status(request.action, "ACK_TIMEOUT");
         }
     }
     ESP_LOGW(TAG, "RESULT timeout; %s outcome unknown. No automatic retry", label);
-    record_status(horn, "RESULT_TIMEOUT");
+    record_status(request.action, "RESULT_TIMEOUT");
 }
 
 esp_err_t enqueue(const cellular::Request &request)
 {
-    const bool horn = request.action == cellular::Action::Horn;
     if (!requests) {
-        record_status(horn, "LINK_UNAVAILABLE");
+        record_status(request.action, "LINK_UNAVAILABLE");
         return ESP_ERR_INVALID_STATE;
     }
     bool expected = false;
     if (!busy.compare_exchange_strong(expected, true)) {
         ESP_LOGW(TAG, "BUSY: SMS or horn action already in progress; request rejected");
-        record_status(horn, "BUSY");
+        record_status(request.action, "BUSY");
         return ESP_ERR_INVALID_STATE;
     }
     if (xQueueSend(requests, &request, 0) != pdTRUE) {
         busy.store(false);
-        record_status(horn, "QUEUE_FAILED");
+        record_status(request.action, "QUEUE_FAILED");
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -177,8 +219,9 @@ void link_task(void *)
 {
     cellular::Request request;
     for (;;) {
+        service_cancel();
         if (xQueueReceive(requests, &request, 0) == pdTRUE) {
-            transact(request);
+            if (!cancel_pending.load()) transact(request);
             busy.store(false);
         } else poll_incoming(pdMS_TO_TICKS(20));
     }
@@ -239,5 +282,22 @@ esp_err_t cellular_link_send_horn()
 
 bool cellular_link_busy()
 {
-    return busy.load();
+    return busy.load() || cancel_pending.load();
+}
+
+esp_err_t cellular_link_send_call(const char *number) {
+    if (!cellular::valid_call_number(number)) return ESP_ERR_INVALID_ARG;
+    cellular::Request request; request.action = cellular::Action::Call;
+    strcpy(request.sms.number, number); return enqueue(request);
+}
+esp_err_t cellular_link_start_alarm() {
+    if(!requests || cancel_pending.load()) return ESP_ERR_INVALID_STATE;
+    alarm_requested.store(true); return ESP_OK;
+}
+void cellular_link_cancel_alert() {
+    cancel_pending.store(true); cancel_requested.store(true);
+}
+bool cellular_link_cancel_pending() { return cancel_pending.load(); }
+void cellular_link_set_sms_handler(void (*handler)(const char *, const char *)) {
+    sms_handler.store(handler);
 }

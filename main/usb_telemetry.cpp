@@ -108,6 +108,17 @@ bool usb_telemetry_host_connected()
     return s_ready;
 }
 
+namespace {
+const char *alert_state="armed";
+uint64_t alert_elapsed=0;
+bool alert_forecast_valid=false;
+float alert_slope=0, alert_forecast=0;
+}
+void usb_telemetry_set_alert(const char *state,uint64_t elapsed_ms,bool valid,float slope,float forecast) {
+    alert_state=state; alert_elapsed=elapsed_ms; alert_forecast_valid=valid;
+    alert_slope=valid?slope:0; alert_forecast=valid?forecast:0;
+}
+
 void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool temperature_humidity_valid, bool face_detected,
                         bool mmwave_presence_detected, bool thermal_heat_detected,
@@ -120,7 +131,7 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
 
     // Shared scratch storage is protected by s_write_mutex for the entire send.
     // Keep these buffers off the caller's stack (normally the main task).
-    static char message[512];
+    static char message[1024];
     const int length = snprintf(
         message, sizeof(message),
         "{\"uptime_ms\":%lld,\"face_detected\":%s,"
@@ -131,7 +142,8 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
         "\"driver_checking\":%s,\"power_state\":\"active\","
         "\"beacon_rssi_dbm\":%d,\"beacon_rssi_valid\":%s,"
         "\"temperature_humidity_valid\":%s,\"temperature_f\":%.1f,"
-        "\"humidity_percent\":%.1f}\n",
+        "\"humidity_percent\":%.1f,\"alert_state\":\"%s\",\"alert_elapsed_ms\":%llu,"
+        "\"forecast_valid\":%s,\"slope_f_per_min\":%.5f,\"forecast_7min_f\":%.2f}\n",
         esp_timer_get_time() / 1000,
         face_detected ? "true" : "false",
         mmwave_presence_detected ? "true" : "false",
@@ -142,7 +154,9 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
         driver.checking ? "true" : "false",
         driver.rssi_dbm, driver.rssi_valid ? "true" : "false",
         temperature_humidity_valid ? "true" : "false",
-        temperature_f, humidity_percent);
+        temperature_f, humidity_percent, alert_state,
+        static_cast<unsigned long long>(alert_elapsed),
+        alert_forecast_valid?"true":"false",alert_slope,alert_forecast);
 
     if (length > 0 && length < static_cast<int>(sizeof(message))) {
         send_packet("BSMT", reinterpret_cast<const uint8_t *>(message),

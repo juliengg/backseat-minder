@@ -20,6 +20,11 @@ static uint32_t now = 0;
 static int64_t buttonUs = 0;
 enum class ModemCase { Ready, Absent, NoSim, NoNetwork, NoPrompt, Reject, NoResult, Slow };
 static ModemCase modemCase = ModemCase::Ready;
+enum class VoiceCase { Good, NoAnswer, DialFail, PlaybackFail, UploadFail };
+static VoiceCase voiceCase = VoiceCase::Good;
+static size_t uploadRemaining = 0;
+static bool dialed = false;
+static bool cancelDial = false, cancelPlay = false;
 static std::string atLine;
 static bool enteringSms = false;
 static unsigned submissions = 0;
@@ -28,6 +33,7 @@ static std::string delayedReply;
 static uint32_t replyAt = 0;
 static bool injectHornDuringSms = false;
 static bool injectDuringHorn = false;
+static bool injectStopDuringHorn = false;
 static bool injectIncoming = false;
 static std::string incomingPdu;
 
@@ -35,6 +41,7 @@ uint32_t millis() { return now; }
 int64_t esp_timer_get_time() { return buttonUs; }
 void delay(uint32_t ms) {
     now += ms;
+    if(injectStopDuringHorn && now>=10) {primary.rx+="ALERT_STOP\n";injectStopDuringHorn=false;}
     if (injectDuringHorn && now >= 10) {
         primary.rx += "SEND_SMS|+15551234567|Second\nHORN_CHIRP\n";
         injectDuringHorn = false;
@@ -47,6 +54,10 @@ void delay(uint32_t ms) {
 
 void test_on_write(HardwareSerial &serial, char c) {
     if (serial.id != 1) return;
+    if (uploadRemaining) {
+        if (--uploadRemaining == 0) modem.rx += "\r\nOK\r\n";
+        return;
+    }
     if (c == 0x1B) { enteringSms = false; atLine.clear(); return; }
     if (enteringSms) {
         if (c == 0x1A) {
@@ -64,7 +75,28 @@ void test_on_write(HardwareSerial &serial, char c) {
     atLine.clear();
     if (modemCase == ModemCase::Absent) return;
     std::string response = "\r\nOK\r\n";
-    if (commandLine == "AT+CPIN?\r\n")
+    if (commandLine.find("AT+CFTRANRX=") == 0) {
+        if (voiceCase == VoiceCase::UploadFail) response.clear();
+        else {
+            uploadRemaining = std::stoul(commandLine.substr(commandLine.find(',') + 1));
+            response = "\r\n> ";
+        }
+    } else if (commandLine == "AT+CLCC\r\n") {
+        if (dialed) response = voiceCase == VoiceCase::NoAnswer ?
+            "\r\n+CLCC: 1,0,3,0,0\r\nOK\r\n" :
+            "\r\n+CLCC: 1,0,0,0,0\r\nOK\r\n";
+    } else if (commandLine.find("ATD") == 0) {
+        dialed = true;
+        if(cancelDial) primary.rx += "ALERT_STOP\n";
+        if (voiceCase == VoiceCase::DialFail) response = "\r\nERROR\r\n";
+    } else if (commandLine == "AT+CHUP\r\n") {
+        dialed = false;
+    } else if (commandLine.find("AT+CCMXPLAYWAV=") == 0 &&
+               commandLine.find("=?") == std::string::npos) {
+        if(cancelPlay) primary.rx += "ALERT_STOP\n";
+        response = voiceCase == VoiceCase::PlaybackFail ? "\r\nERROR\r\n" :
+            "\r\nOK\r\n+WAVSTATE: wav play stop\r\n";
+    } else if (commandLine == "AT+CPIN?\r\n")
         response = modemCase == ModemCase::NoSim ? "\r\n+CME ERROR: 10\r\n" : "\r\n+CPIN: READY\r\nOK\r\n";
     else if (commandLine == "AT+CREG?\r\n")
         response = modemCase == ModemCase::NoNetwork ? "\r\n+CREG: 0,2\r\nOK\r\n" : "\r\n+CREG: 0,1\r\nOK\r\n";
@@ -98,7 +130,8 @@ static void reset(ModemCase scenario = ModemCase::Ready) {
     input = cellular::LineBuffer{};
     busy = frameReceivedWhileBusy = false;
     now = 0;
-    injectHornDuringSms = injectDuringHorn = false;
+    uploadRemaining = 0; dialed = cancelDial = cancelPlay = false; voiceCase = VoiceCase::Good;
+    injectHornDuringSms = injectDuringHorn = injectStopDuringHorn = false;
     injectIncoming = false;
     MCP2515::resetResult = MCP2515::bitrateResult = MCP2515::modeResult = MCP2515::ERROR_OK;
     MCP2515::frames.clear(); MCP2515::times.clear(); MCP2515::results.clear();
@@ -285,8 +318,9 @@ static void test_incoming() {
     reset(); now = MODEM_BOOT_WAIT_MS; loop();
     assert(sms_service::receiving_busy());
     request();
-    assert(primary.tx.find("RESULT|ERROR|BUSY\n") != std::string::npos);
-    assert(submissions == 0); // A send cannot interleave the receiver's AT commands.
+    assert(primary.tx.find("ACCEPTED\n") != std::string::npos);
+    assert(primary.tx.find(SEND_REAL_SMS?"RESULT|OK\n":"RESULT|ERROR|DRY_RUN\n") != std::string::npos);
+    assert(submissions == (SEND_REAL_SMS?1u:0u)); // Wait for background reception, never interleave AT commands.
 
     reset(); settle_receiver(); primary.tx.clear();
     modem.rx = "+CMTI: \"SM\",65536\r\n+CMTI: \"XX\",2\r\n+CMTI: \"SM\",2AT\r\n";
@@ -392,7 +426,85 @@ static void test_horn() {
     assert(MCP2515::frames.empty() && primary.tx.find("UNKNOWN_COMMAND") != std::string::npos);
 }
 
+
+static void test_voice() {
+    reset();
+    assert(std::string(sms_service::call("+1555;ATH", primary_link::poll)) == "BAD_NUMBER");
+    assert(modem.tx.empty());
+    if (!ENABLE_VOICE_CALLS) {
+        assert(std::string(sms_service::call("+15551234567", primary_link::poll)) == "DRY_RUN");
+        assert(modem.tx.empty());
+        return;
+    }
+    incomingPdu = "00040B915155214365F700004210203040500005C82293F904";
+    injectIncoming = true;
+    injectBusyCommand = injectHornDuringSms = true;
+    assert(!sms_service::call("+15551234567", primary_link::poll));
+    assert(primary.tx.find("RESULT|ERROR|BUSY") != std::string::npos);
+    assert(primary.tx.find("HORN_RESULT|ERROR|BUSY") != std::string::npos);
+    assert(MCP2515::frames.empty());
+    assert(sms_service::pendingCount == 0); // Voice inbox forwarded SMS during dialing.
+    assert(primary.tx.find("RECEIVED_SMS|") != std::string::npos);
+    assert(sms_service::voiceConnected);
+    assert(modem.tx.find("AT+CHUP") == std::string::npos);
+    assert(std::string(sms_service::call("+15551234567", primary_link::poll)) == "BUSY");
+    modem.rx += "\r\nNO CARRIER\r\n";
+    settle_receiver();
+    assert(!sms_service::voiceConnected && sms_service::pendingCount == 0);
+    request(); // Outgoing SMS still works after the call and inbox processing.
+    assert(primary.tx.find(SEND_REAL_SMS ? "RESULT|OK" : "RESULT|ERROR|DRY_RUN") != std::string::npos);
+    for (VoiceCase scenario : {VoiceCase::NoAnswer, VoiceCase::DialFail, VoiceCase::PlaybackFail}) {
+        reset(); voiceCase = scenario;
+        const char *result = sms_service::call("+15551234567", primary_link::poll);
+        assert(result);
+        assert(std::string(result) == (scenario == VoiceCase::NoAnswer ? "CALL_NOT_ANSWERED" :
+            scenario == VoiceCase::DialFail ? "CALL_DIAL_FAILED" : "PLAYBACK_FAILED"));
+        assert(modem.tx.find("AT+CHUP") != std::string::npos);
+        assert(!sms_service::voiceConnected);
+    }
+    reset(); voiceCase = VoiceCase::UploadFail;
+    assert(std::string(sms_service::call("+15551234567", primary_link::poll)) == "AUDIO_TRANSFER_UNCERTAIN");
+    assert(modem.tx.find("ATD") == std::string::npos);
+    const auto bytes = modem.tx.size();
+    for (int i = 0; i < 20; ++i) loop();
+    assert(modem.tx.size() == bytes); // No AT commands enter uncertain binary transfer.
+}
+
+
+static void test_alarm_cancel() {
+    reset(); injectStopDuringHorn=true; request("HORN_CHIRP\n");primary_link::poll();
+    assert(MCP2515::times.back()<=11 && primary.tx.find("ALERT_STOPPED")!=std::string::npos);
+    for(size_t i=1;i<MCP2515::frames.size();++i) assert(MCP2515::frames[i].data[0]==0x02);
+    reset(); request("HORN_REPEAT\n");
+    assert(primary.tx=="ALARM_ACCEPTED\nALARM_RESULT|OK\n");
+    assert(MCP2515::frames.size()==1 && MCP2515::frames.back().data[0]==0x42);
+    now=999;primary_link::poll();assert(MCP2515::frames.back().data[0]==0x42);
+    now=1000;primary_link::poll();assert(MCP2515::frames.back().data[0]==0x02);
+    const auto frames=MCP2515::frames.size();
+    now=2999;primary_link::poll();assert(MCP2515::frames.size()==frames);
+    now=3000;primary_link::poll();assert(MCP2515::frames.back().data[0]==0x42);
+    now=3500;request("ALERT_STOP\n");primary_link::poll();
+    assert(primary.tx.find("ALERT_STOPPED")!=std::string::npos);
+    assert(MCP2515::frames.back().data[0]==0x02);
+    const auto stopped=MCP2515::frames.size();
+    now=9000;primary_link::poll();assert(MCP2515::frames.size()==stopped);
+    if(ENABLE_VOICE_CALLS) {
+        for(bool duringPlay : {false,true}) {
+            reset(); cancelDial=!duringPlay;cancelPlay=duringPlay;
+            assert(std::string(sms_service::call("933",primary_link::poll))=="CANCELLED");
+            assert(modem.tx.find("ATD933;\r\n")!=std::string::npos);
+            assert(modem.tx.find("AT+CHUP")!=std::string::npos);
+            assert(!sms_service::voiceConnected);
+            primary_link::poll();assert(primary.tx.find("ALERT_STOPPED")!=std::string::npos);
+        }
+        reset(); request("HORN_REPEAT\n");
+        cancelDial=true;
+        assert(std::string(sms_service::call("933",primary_link::poll))=="CANCELLED");
+        assert(MCP2515::frames.back().data[0]==0x02);
+    }
+}
+
 int main() {
-    test_protocol(); test_secondary(); test_button(); test_horn(); test_incoming();
-    printf("PASS: protocol, secondary SMS (%s), horn frames/timing/failures/shared BUSY, and BOOT debounce\n", SEND_REAL_SMS ? "real SMS simulation" : "dry run");
+    test_protocol(); test_secondary(); test_button(); test_horn(); test_incoming(); test_voice(); test_alarm_cancel();
+    printf("PASS: voice workflow/cleanup/notifications and protocol, secondary SMS (%s), horn frames/timing/failures/shared BUSY, and BOOT debounce\n", SEND_REAL_SMS ? "real SMS simulation" : "dry run");
 }

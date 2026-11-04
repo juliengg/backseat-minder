@@ -20,11 +20,13 @@
 #include "boot_button.h"
 #include "beacon_tracker.h"
 #include "driver_power.h"
+#include "alert_runtime.h"
 #include "cellular_link.h"
 #include "cellular_diagnostics.h"
 #include "cellular_protocol.h"
 #include <cstdio>
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mmwave_sensor.h"
@@ -83,7 +85,13 @@ extern "C" void app_main()
     setup_mode_init();  // handles NVS, button GPIO
     boot_button_init(boot_wakeup);
     usb_telemetry_init();
-    const bool beacon_ready = beacon_tracker_init(driver_power_timer_wakeup());
+    alert_runtime_init();
+    const bool suppressed_boot = alert_runtime_suppressed();
+    const bool beacon_ready = beacon_tracker_init(driver_power_timer_wakeup() && !suppressed_boot);
+    if(suppressed_boot) {
+        cellular_link_init();
+        cellular_link_cancel_alert();
+    }
     if (!beacon_ready) ESP_LOGW("app_main", "Beacon unavailable; monitoring stays active");
 
     // Suppress the onboard NeoPixel (GPIO 48) by driving it low.
@@ -98,7 +106,8 @@ extern "C" void app_main()
     gpio_set_level(LED_GPIO, 0);
 
     bool setup_requested_during_probe = false;
-    if (driver_power_timer_wakeup() && beacon_ready) {
+    bool deferred_setup = false;
+    if ((driver_power_timer_wakeup() || suppressed_boot) && beacon_ready) {
         // Do not start the camera, AI, sensors or cellular worker just to check
         // a still-near fob. A missing/weak fob exits into full monitoring.
         const TickType_t probe_started = xTaskGetTickCount();
@@ -120,7 +129,11 @@ extern "C" void app_main()
                 usb_telemetry_send_driver_status(beacon_tracker_status(), TelemetryPowerState::BeaconProbe);
                 last_probe_report = xTaskGetTickCount();
             }
-            driver_power_sleep_if_present(false);
+            if(suppressed_boot) {
+                const auto status=beacon_tracker_status();
+                if(status.available && !status.checking && status.driver_present) break;
+                driver_power_sleep_cancelled(cellular_link_busy());
+            } else driver_power_sleep_if_present(false);
             const auto probe = beacon_tracker_status();
             if (!probe.available && !probe.checking) break;
             if (probe.available && !probe.checking && !probe.driver_present) {
@@ -129,6 +142,15 @@ extern "C" void app_main()
             }
             vTaskDelay(pdMS_TO_TICKS(20));
         }
+    }
+    while(suppressed_boot && !setup_requested_during_probe) {
+        const auto status=beacon_tracker_status();
+        if(status.available && !status.checking && status.driver_present) break;
+        usb_telemetry_poll_commands();
+        if(usb_telemetry_sms_pending() || gpio_get_level(GPIO_NUM_0)==0) break;
+        if(setup_mode_button_pressed()) { setup_requested_during_probe=true; break; }
+        driver_power_sleep_cancelled(cellular_link_busy());
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
     const esp_err_t cellular_status = cellular_link_init();
     if (cellular_status != ESP_OK) {
@@ -156,6 +178,8 @@ extern "C" void app_main()
     TickType_t last_sensor_read = 0;
     TickType_t last_stack_report = xTaskGetTickCount();
     TickType_t last_driver_report = 0;
+    uint64_t suppression_probe_started = 0;
+    bool was_suppressed = false;
 
     while (true)
     {
@@ -191,7 +215,12 @@ extern "C" void app_main()
 
         if (setup_requested_during_probe || setup_mode_button_pressed()) {
             setup_requested_during_probe = false;
-            enter_setup_mode();  // blocks until confirmed
+            deferred_setup = true;
+        }
+        // Setup blocks/reboots the main task. Defer it during an active incident.
+        if(deferred_setup && !alert_runtime_active() && !cellular_link_busy()) {
+            deferred_setup=false;
+            enter_setup_mode();
         }
 
         const BeaconStatus driver = beacon_tracker_status();
@@ -209,6 +238,7 @@ extern "C" void app_main()
         const bool human_presence_detected = face_detected_since_telemetry ||
                                              mmwave_presence_detected ||
                                              thermal_heat_detected;
+        alert_runtime_poll(human_presence_detected,driver);
         gpio_set_level(LED_GPIO, human_presence_detected ? 1 : 0);
 
         // AM2302/DHT22 measurements should be spaced by at least two seconds.
@@ -221,6 +251,14 @@ extern "C" void app_main()
                          temperature_f, humidity_percent);
             }
 
+            alert_runtime_sample(temperature_f,temperature_humidity_valid);
+            alert_runtime_poll(human_presence_detected,driver);
+            const auto &workflow=alert_runtime_workflow();
+            const char *alert_state=workflow.state==alert::State::Active?"active":
+                workflow.state==alert::State::Suppressed?"suppressed":"armed";
+            usb_telemetry_set_alert(alert_state,
+                workflow.elapsed(static_cast<uint64_t>(esp_timer_get_time()/1000)),
+                workflow.forecast_valid,workflow.slope_f_per_min,workflow.forecast_f);
             usb_telemetry_send(temperature_f, humidity_percent,
                                temperature_humidity_valid,
                                face_detected_since_telemetry,
@@ -239,7 +277,19 @@ extern "C" void app_main()
         }
 
         // Finish a queued SMS/horn before removing power from the primary.
-        driver_power_sleep_if_present(cellular_link_busy());
+        const bool actions_busy=cellular_link_busy();
+        if(alert_runtime_suppressed()) {
+            const uint64_t now_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
+            if(!was_suppressed) suppression_probe_started=now_ms;
+            was_suppressed=true;
+            // On return allow a bounded sensor check, then sleep/recheck if occupied.
+            const bool returning=driver.available && !driver.checking && driver.driver_present;
+            const bool sensor_check=returning && now_ms-suppression_probe_started<10000;
+            driver_power_sleep_cancelled(actions_busy || sensor_check);
+        } else {
+            was_suppressed=false;
+            driver_power_sleep_if_present(actions_busy || alert_runtime_active());
+        }
         vTaskDelay(pdMS_TO_TICKS(20)); // Keep USB commands and setup responsive.
     }
 }

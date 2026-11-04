@@ -4,6 +4,10 @@
 #include <cstdint>
 #include <string>
 
+#ifndef PROGMEM
+#define PROGMEM
+#endif
+
 constexpr int SERIAL_8N1 = 0;
 constexpr int INPUT = 1;
 inline void pinMode(int, int) {}
@@ -27,6 +31,11 @@ public:
         return c;
     }
     void write(char c) { tx += c; test_on_write(*this, c); }
+    size_t write(const uint8_t *data, size_t count) {
+        for (size_t i = 0; i < count; ++i) write(static_cast<char>(data[i]));
+        return count;
+    }
+    void flush() {}
     void print(const char *s) { while (*s) write(*s++); }
     void println(const char *s) { print(s); print("\n"); }
     void printf(const char *format, ...) {

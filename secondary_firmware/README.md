@@ -360,3 +360,27 @@ host suite passes for both secondary variants and the primary transport, includi
 bounded diagnostic history and JSON validation. Viewer tests cover status summaries,
 acknowledgement/result history, dry-run wording and malformed telemetry.
 Bench acceptance remains pending; no boards were flashed during implementation.
+
+## Automatic alert workflow and recorded voice
+
+See [ALERT_WORKFLOW.md](../ALERT_WORKFLOW.md) for the complete on-device alert
+sequence, cancellation, sleep policy, forecasts, and build/test instructions.
+The primary now sends `CALL|933` and `HORN_REPEAT` as needed. `ALERT_STOP` is an
+urgent control command accepted during modem operations. It stops the repeating
+horn and cancels/hangs up an active call. The modem reads/forwards stored incoming
+SMS between voice transactions so authorized STOP messages can reach the primary.
+
+Build `esp32_wroom_32_alerts` to enable real SMS and voice. Existing default and
+real-SMS environments retain their previous transmission settings. The default
+still transmits CAN for horn commands, as before. The call destination is currently
+933, as explicitly configured for this workflow; no number substitution is made.
+
+The voice API is `sms_service::call(number, service_primary)`. It shares the modem
+and incoming SMS parser. It returns nullptr when the recording completes, otherwise
+a fixed error token; a disabled call returns DRY_RUN without dialing. SMS number
+validation remains unchanged; only the voice path additionally permits 933.
+Successful playback leaves the call connected until the recipient hangs up or
+cancellation requests a hang-up. Voicemail counts as an answer. Binary upload
+failures lock out modem commands until modem and secondary are power-cycled.
+Incoming SMS reads and command boundaries introduce some cancellation latency;
+an in-progress SMS submission is allowed to finish. No automatic redial is used.

@@ -21,7 +21,9 @@ constexpr const char *HORN_COMMAND = "HORN_CHIRP";
 constexpr uint32_t HORN_ACK_TIMEOUT_MS = 500;
 constexpr uint32_t HORN_RESULT_TIMEOUT_MS = 3000;
 
-enum class Action { Sms, Horn };
+constexpr const char *ALERT_STOP_COMMAND = "ALERT_STOP";
+constexpr uint32_t CALL_RESULT_TIMEOUT_MS = 170000;
+enum class Action { Sms, Horn, Call };
 
 inline bool valid_number(const char *number)
 {
@@ -34,6 +36,11 @@ inline bool valid_number(const char *number)
         if (*number < '0' || *number > '9' || ++digits > 15) return false;
     }
     return digits >= 7;
+}
+
+// 933 is the explicitly configured bench destination; SMS validation stays strict.
+inline bool valid_call_number(const char *number) {
+    return number && (!strcmp(number, "933") || valid_number(number));
 }
 
 inline bool valid_message(const char *message)

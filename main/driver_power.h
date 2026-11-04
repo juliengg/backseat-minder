@@ -11,3 +11,6 @@ bool driver_power_timer_wakeup();
 // Sleeps only on a fresh, qualified NEAR decision, with no pending SMS/horn or
 // held buttons. Returns if sleep is deferred or a prerequisite fails.
 void driver_power_sleep_if_present(bool action_busy);
+
+// Cancelled incident: beacon-only timer probes even while driver remains away.
+void driver_power_sleep_cancelled(bool action_busy);

@@ -12,3 +12,10 @@ esp_err_t cellular_link_send_sms(const char *number, const char *message);
 esp_err_t cellular_link_send_horn();
 // Includes queued requests and the entire SMS/horn acknowledgement/result wait.
 bool cellular_link_busy();
+
+// Voice and repeating horn use the existing asynchronous transaction worker.
+esp_err_t cellular_link_send_call(const char *number);
+esp_err_t cellular_link_start_alarm();
+void cellular_link_cancel_alert(); // Urgent STOP bypasses an active transaction.
+bool cellular_link_cancel_pending();
+void cellular_link_set_sms_handler(void (*handler)(const char *, const char *));

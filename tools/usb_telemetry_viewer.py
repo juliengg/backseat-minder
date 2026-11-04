@@ -18,6 +18,20 @@ import serial
 
 
 CELLULAR_STATUSES = {
+    "ALERT_STARTED": ("Presence alert started; driver away", "darkorange"),
+    "ALERT_CANCELLED": ("Alert cancelled; monitoring suppressed", "blue"),
+    "ALERT_REARMED": ("Driver returned and sensors clear; alert rearmed", "green"),
+    "ALERT_STOPPED": ("Horn and voice cancellation acknowledged", "blue"),
+    "ALERT_STOP_FAILED": ("Could not confirm cancellation; check device", "red"),
+    "STOP_UNAUTHORIZED": ("STOP ignored: sender is not a saved contact", "darkorange"),
+    "ALARM_ACCEPTED": ("Repeating horn request accepted", "blue"),
+    "ALARM_OK": ("Repeating horn scheduled: 1 second on, 2 seconds off", "darkorange"),
+    "ALARM_FAILED": ("Repeating horn failed; check secondary logs", "red"),
+    "CALL_WAITING_ACK": ("Recorded call: waiting for secondary", "darkorange"),
+    "CALL_ACCEPTED": ("Recorded call workflow accepted", "blue"),
+    "CALL_OK": ("Recording finished; call remains connected", "green"),
+    "CALL_DRY_RUN": ("Call disabled in this firmware; no number dialed", "darkorange"),
+    "CALL_CANCELLED": ("Recorded call cancelled", "blue"),
     "RX_READY": ("Incoming SMS reception ready", "green"),
     "RX_ERROR": ("Could not configure/read incoming SMS - check secondary logs", "red"),
     "RX_QUEUE_FULL": ("Incoming SMS queue full - some texts were not displayed", "red"),
@@ -248,6 +262,17 @@ def update_cellular_panel(label, history_widget, sample: dict) -> None:
     history_widget.configure(state="disabled")
 
 
+def device_forecast_line(sample: dict, elapsed: float, temperature: float):
+    """Display only the forecast transmitted by the ESP32; never fit one here."""
+    forecast = sample.get("forecast_7min_f")
+    if (sample.get("alert_state") == "active" and sample.get("forecast_valid")
+            and sample.get("temperature_humidity_valid")
+            and isinstance(forecast, (int, float)) and math.isfinite(forecast)
+            and math.isfinite(temperature)):
+        return [elapsed, elapsed + 420], [temperature, forecast]
+    return [], []
+
+
 def regression_line(times, values):
     """Return endpoints of a least-squares fit to the last 10 finite samples."""
     points = [(x, y) for x, y in zip(times, values)
@@ -391,7 +416,7 @@ def show_viewer(device: serial.Serial) -> int:
                                 justify="left", wraplength=310, fg="gray")
     connection_label.pack(fill="x")
 
-    cellular_frame = tk.LabelFrame(values_frame, text="Cellular SMS")
+    cellular_frame = tk.LabelFrame(values_frame, text="Cellular alerts")
     cellular_frame.pack(fill="both", expand=True, pady=(8, 0))
     sms_control = SmsControl(device)
 
@@ -431,7 +456,7 @@ def show_viewer(device: serial.Serial) -> int:
         [], [], color="tab:blue", label="Humidity", marker=".", markersize=3)
     temperature_fit, = temperature_axis.plot(
         [], [], color="darkred", linestyle="--", linewidth=2, zorder=4,
-        label="Temperature fit (10 readings)")
+        label="ESP32 forecast (+7 minutes)")
     humidity_fit, = humidity_axis.plot(
         [], [], color="navy", linestyle="--", linewidth=2, zorder=4,
         label="Humidity fit (10 readings)")
@@ -443,6 +468,7 @@ def show_viewer(device: serial.Serial) -> int:
     temperature_axis.set_xlim(0, 300)
     temperature_axis.set_ylim(32, 120)
     humidity_axis.set_ylim(0, 100)
+    temperature_axis.axhline(104,color="firebrick",linestyle=":",linewidth=1)
     temperature_axis.grid(True, alpha=0.25)
     temperature_axis.legend(
         handles=[temperature_line, humidity_line, temperature_fit, humidity_fit],
@@ -452,10 +478,18 @@ def show_viewer(device: serial.Serial) -> int:
     trend_canvas.get_tk_widget().pack(fill="both", expand=True)
     history = deque(maxlen=3000)
     first_reading_time = None
+    previous_alert_state = None
 
     def update_trend(sample: dict) -> None:
-        nonlocal first_reading_time
-        now = time.monotonic()
+        nonlocal first_reading_time, previous_alert_state
+        now = float(sample.get("uptime_ms", time.monotonic()*1000))/1000
+        state = sample.get("alert_state", "armed")
+        if (history and now < history[-1][0]) or (state == "active" and previous_alert_state != "active"):
+            history.clear()
+            first_reading_time = None
+        if state == "active" and first_reading_time is None:
+            first_reading_time = now - float(sample.get("alert_elapsed_ms",0))/1000
+        previous_alert_state = state
         if first_reading_time is None:
             first_reading_time = now
         try:
@@ -475,17 +509,26 @@ def show_viewer(device: serial.Serial) -> int:
         elapsed = [timestamp - first_reading_time for timestamp in times]
         temperature_line.set_data(elapsed, temperatures)
         humidity_line.set_data(elapsed, humidities)
-        temperature_fit.set_data(*regression_line(elapsed, temperatures))
+        forecast_ok = bool(sample.get("forecast_valid")) and state == "active" and valid
+        forecast = sample.get("forecast_7min_f")
+        if forecast_ok and isinstance(forecast,(float,int)) and np.isfinite(forecast):
+            temperature_fit.set_data(*device_forecast_line(sample,elapsed[-1],temperature))
+        else:
+            temperature_fit.set_data([],[])
+        temperature_axis.set_title(
+            f"Alert: {state} | elapsed {float(sample.get('alert_elapsed_ms',0))/60000:.1f} min | "
+            + (f"ESP32 slope {sample.get('slope_f_per_min',0):.2f} F/min; +7 min {forecast:.1f} F"
+               if forecast_ok and isinstance(forecast,(float,int)) else "ESP32 forecast unavailable"),fontsize=8)
         humidity_fit.set_data(*regression_line(elapsed, humidities))
         latest_time = now - first_reading_time
-        temperature_axis.set_xlim(max(0, latest_time - 300), max(300, latest_time))
+        temperature_axis.set_xlim(max(0, latest_time - 300), max(300, latest_time + (420 if forecast_ok else 0)))
         temperature_axis.relim()
         temperature_axis.autoscale_view(scalex=False, scaley=True)
         trend_canvas.draw_idle()
 
     receive_buffer = bytearray()
     maximum_lengths = {
-        b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000, b"BSMD": 5,
+        b"BSMF": 200_000, b"BSMT": 1024, b"BSMH": 8_000, b"BSMD": 5,
         b"BSMC": 10000, b"BSMP": 512,
     }
     thermal_frame_count = 0

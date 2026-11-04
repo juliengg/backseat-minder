@@ -7,3 +7,9 @@ bool begin();
 // Returns nullptr when all frames were submitted, otherwise a fixed error token.
 const char *chirp(void (*service_primary)());
 }
+
+namespace can_horn {
+const char *start_alarm();
+bool stop_alarm();
+void poll(); // One-second ON, two-second OFF, refresh ON frames every 100 ms.
+}
