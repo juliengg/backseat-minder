@@ -119,8 +119,8 @@ turn off the separately powered modem/secondary.
 ## Build and verification
 
 - Primary: build the ESP-IDF project with its required ESP-WHO dependency and flash
-  the S3. The checked-in root CMakeLists currently points to an ESP-WHO directory
-  on the original author's computer; a matching local environment is required.
+  the S3. See [PRIMARY_BUILD.md](PRIMARY_BUILD.md) for the local environment and
+  build helper. ESP_WHO_PATH selects the legacy framework checkout.
 - Secondary: `pio run -d secondary_firmware -e esp32_wroom_32_alerts` enables both
   real SMS and recorded calls. Existing build environments retain their settings.
 - In Wi-Fi setup save driver/emergency numbers and enable **Emergency alerts**
