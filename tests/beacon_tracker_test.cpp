@@ -64,7 +64,7 @@ static void start(bool previous = false) {
 }
 static void sample(int rssi, bool correct_mac = true) {
     esp_ble_gap_cb_param_t param{};
-    const esp_bd_addr_t mac = {0x78, 0x9f, 0x38, 0x08, 0x0b, 0xe5};
+    const esp_bd_addr_t mac = {0x78, 0x9f, 0x38, 0x0f, 0xf4, 0x43};
     memcpy(param.scan_rst.bda, mac, sizeof(mac));
     if (!correct_mac) param.scan_rst.bda[5] ^= 1;
     param.scan_rst.search_evt = ESP_GAP_SEARCH_INQ_RES_EVT;
@@ -77,14 +77,27 @@ int main() {
     start();
     for (int i = 0; i < 6; ++i) sample(-40, false);
     assert(!beacon_tracker_driver_near() && !beacon_tracker_status().rssi_valid);
-    sample(-75); sample(-75);
+    sample(-74); sample(-76);
     assert(!beacon_tracker_driver_near()); // No optimistic boot decision.
     assert(beacon_tracker_status().checking);
     sample(-75);
     assert(beacon_tracker_driver_near());
     assert(!beacon_tracker_status().checking);
-    samples(-100, 2);
-    assert(beacon_tracker_driver_near()); // Median rejects two low outliers.
+    assert(beacon_tracker_rssi() == -75); // Partial window uses its actual count.
+    samples(-100, 1);
+    assert(beacon_tracker_rssi() == -81); // Average includes the low reading.
+    assert(!beacon_tracker_driver_near());
+    samples(-75);
+    assert(beacon_tracker_driver_near());
+    sample(-100);
+    assert(beacon_tracker_rssi() == -79);
+    assert(beacon_tracker_driver_near()); // One noisy sample stays in the dead band.
+    sample(-100);
+    assert(beacon_tracker_rssi() == -83);
+    assert(!beacon_tracker_driver_near());
+    samples(-75);
+    assert(beacon_tracker_rssi() == -75); // Old readings roll out of the window.
+    assert(beacon_tracker_driver_near());
     samples(-80);
     assert(beacon_tracker_driver_near()); // Strict AWAY boundary is below -80.
     samples(-81);
@@ -100,6 +113,7 @@ int main() {
     assert(!beacon_tracker_driver_near() && beacon_tracker_rssi() == 0);
     sample(-40);
     assert(!beacon_tracker_driver_near()); // Stale window discarded on return.
+    assert(beacon_tracker_rssi() == -40);
     sample(-40); sample(-40);
     assert(beacon_tracker_driver_near());
 
@@ -152,5 +166,5 @@ int main() {
         assert(controller == ESP_BT_CONTROLLER_STATUS_IDLE);
         assert(host == ESP_BLUEDROID_STATUS_UNINITIALIZED);
     }
-    puts("PASS: beacon MAC, median, thresholds, timeout, fresh return, timer hysteresis, wrap, BLE failures and cleanup");
+    puts("PASS: beacon MAC, moving average, thresholds, timeout, fresh return, timer hysteresis, wrap, BLE failures and cleanup");
 }

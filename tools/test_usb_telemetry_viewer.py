@@ -1,5 +1,6 @@
 """Run with: python -m unittest discover -s tools -p 'test_*.py'."""
 
+import struct
 import itertools
 import unittest
 from unittest.mock import Mock, patch
@@ -9,7 +10,7 @@ from usb_telemetry_viewer import detection_statuses, update_detection_labels, re
 from usb_telemetry_viewer import cellular_view, update_cellular_panel
 from usb_telemetry_viewer import SmsControl
 from usb_telemetry_viewer import UsbConnection, driver_view, DriverDisplay
-from usb_telemetry_viewer import main
+from usb_telemetry_viewer import main, PacketReader
 
 
 class DriverTelemetryTests(unittest.TestCase):
@@ -126,7 +127,7 @@ class DriverTelemetryTests(unittest.TestCase):
         connection = UsbConnection(device)
         self.assertEqual(connection.read_available(0), b"")
         self.assertEqual(connection.read_available(0.9), b"")
-        for now in (1, 5, 30):
+        for now in (1, 2, 4):
             self.assertEqual(connection.read_available(now), b"")
         device.write.assert_not_called()
 
@@ -361,3 +362,44 @@ class DetectionStatusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamRecoveryTests(unittest.TestCase):
+    def packet(self, marker, payload):
+        return marker + struct.pack(">I", len(payload)) + payload
+
+    def test_partial_transfer_is_discarded_after_gap(self):
+        reader = PacketReader()
+        self.assertEqual(reader.feed(b"BSMF" + struct.pack(">I", 90000) + b"partial", 0), [])
+        thermal = b",".join([b"25.00"] * 768)
+        self.assertEqual(reader.feed(self.packet(b"BSMH", thermal), 1.1),
+                         [(b"BSMH", thermal)])
+
+    def test_fragmented_and_multiplexed_packets_survive_normal_reads(self):
+        reader = PacketReader()
+        wire = self.packet(b"BSMF", b"jpeg") + self.packet(b"BSMH", b"25,26")
+        packets = []
+        for i, byte in enumerate(wire):
+            packets.extend(reader.feed(bytes([byte]), i * 0.01))
+        self.assertEqual(packets, [(b"BSMF", b"jpeg"), (b"BSMH", b"25,26")])
+
+    def test_idle_poll_discards_partial_frame_before_new_data(self):
+        reader = PacketReader()
+        reader.feed(b"BSMH" + struct.pack(">I", 5000) + b"25", 0)
+        self.assertEqual(reader.feed(b"", 1.1), [])
+        self.assertEqual(reader.feed(self.packet(b"BSMH", b"26"), 1.2),
+                         [(b"BSMH", b"26")])
+
+    def test_silent_dead_handle_is_reopened_without_commands(self):
+        device = Mock(is_open=True, in_waiting=0)
+        device.close.side_effect = lambda: setattr(device, "is_open", False)
+        device.open.side_effect = lambda: setattr(device, "is_open", True)
+        connection = UsbConnection(device)
+        self.assertEqual(connection.read_available(0), b"")
+        self.assertIsNone(connection.read_available(5))
+        self.assertIsNone(connection.read_available(5.2))
+        device.in_waiting = 4
+        device.read.return_value = b"BSMH"
+        self.assertEqual(connection.read_available(5.5), b"BSMH")
+        self.assertEqual(connection.generation, 1)
+        device.write.assert_not_called()

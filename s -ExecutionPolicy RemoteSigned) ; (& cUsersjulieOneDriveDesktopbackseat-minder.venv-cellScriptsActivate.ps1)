@@ -1,0 +1,22 @@
+[33m4f83102[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m Fixed setup mode keyboard
+[33me057da4[m Implemented driver presence with ibeacon detection
+[33mcfb1687[m sms receiving and position viewing in setup app
+[33mb9606b7[m fixed messaging for all carrier support
+[33m6c14a88[m fixed rebooting issue
+[33m704792b[m updated setup mode to include name and updated text message to include name
+[33m2c17e41[m cell module functionality integrated into prototype
+[33m3745997[m low power mode toggling
+[33me4dde69[m fixed temp sensor validity and added plot to viewer
+[33m860391b[m Tuned detection methods, added sensor fusion logic, and UI changes
+[33mff36c60[m thermal cam sensor functionally integrated
+[33m099a9e5[m integrated mmWave radar detection
+[33ma8116bb[m Development mode added
+[33m2f00c54[m integrated temp and humidity sensor processing initial
+[33me14e782[m Configuration portal opens reliably now
+[33m1fd1fbf[m Updated configuration portal to store data in nvs flash
+[33m271db03[m Updated captive portal, automatically opens upon wifi connection
+[33mc483517[m Added setup_mode, works for manual address visit
+[33m2297caa[m Delete build directory
+[33m40403cd[m Updated config, uploading from this save works now. LED face detection
+[33m04c258d[m working version LED activates on face detection
+[33m0e5ada4[m Initial working face detection project

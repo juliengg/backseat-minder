@@ -132,6 +132,7 @@ class UsbConnection:
         self.device = device
         self.next_attempt = 0
         self.generation = 0
+        self.last_activity = None
 
     def read_available(self, now):
         if not self.device.is_open:
@@ -140,12 +141,21 @@ class UsbConnection:
             try:
                 self.device.open()
                 self.generation += 1
+                self.last_activity = now
             except (serial.SerialException, OSError):
                 self.next_attempt = now + 0.5
                 return None
         try:
             available = self.device.in_waiting
-            return self.device.read(available) if available else b""
+            data = self.device.read(available) if available else b""
+            if data or self.last_activity is None:
+                self.last_activity = now
+            elif now - self.last_activity >= 5:
+                # Some USB drivers leave a dead handle open without raising.
+                self.device.close()
+                self.next_attempt = now + 0.5
+                return None
+            return data
         except (serial.SerialException, OSError):
             try:
                 self.device.close()
@@ -153,6 +163,51 @@ class UsbConnection:
                 pass
             self.next_attempt = now + 0.5
             return None
+
+
+class PacketReader:
+    """Decode multiplexed USB packets, discarding interrupted transfers."""
+
+    maximum_lengths = {
+        b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000, b"BSMD": 5,
+        b"BSMC": 10000, b"BSMP": 512,
+    }
+
+    def __init__(self):
+        self.buffer = bytearray()
+        self.last_data = None
+
+    def clear(self):
+        self.buffer.clear()
+        self.last_data = None
+
+    def feed(self, data, now):
+        # A truncated JPEG/thermal packet must not consume the next frame.
+        if self.last_data is not None and now - self.last_data >= 1:
+            self.clear()
+        if data:
+            self.last_data = now
+            self.buffer.extend(data)
+        packets = []
+        while True:
+            positions = [self.buffer.find(marker) for marker in self.maximum_lengths]
+            positions = [position for position in positions if position >= 0]
+            if not positions:
+                del self.buffer[:-3]
+                break
+            del self.buffer[:min(positions)]
+            if len(self.buffer) < 8:
+                break
+            marker = bytes(self.buffer[:4])
+            length = struct.unpack(">I", self.buffer[4:8])[0]
+            if not 0 < length <= self.maximum_lengths[marker]:
+                del self.buffer[:4]
+                continue
+            if len(self.buffer) < 8 + length:
+                break
+            packets.append((marker, bytes(self.buffer[8:8 + length])))
+            del self.buffer[:8 + length]
+        return packets
 
 
 def driver_view(sample):
@@ -483,11 +538,7 @@ def show_viewer(device: serial.Serial) -> int:
         temperature_axis.autoscale_view(scalex=False, scaley=True)
         trend_canvas.draw_idle()
 
-    receive_buffer = bytearray()
-    maximum_lengths = {
-        b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000, b"BSMD": 5,
-        b"BSMC": 10000, b"BSMP": 512,
-    }
+    packet_reader = PacketReader()
     thermal_frame_count = 0
     cellular_last_received = None
     cellular_stale = False
@@ -512,7 +563,7 @@ def show_viewer(device: serial.Serial) -> int:
         previous_generation = connection.generation
         data = connection.read_available(time.monotonic())
         if data is None:
-            receive_buffer.clear()
+            packet_reader.clear()
             sms_control.last_received = None
             refresh_sms_button()
             connection_label.configure(
@@ -520,37 +571,14 @@ def show_viewer(device: serial.Serial) -> int:
                      "Driver flag shows the last report.", fg="gray")
         else:
             if connection.generation != previous_generation:
-                receive_buffer.clear()  # A packet cannot span a device reboot.
+                packet_reader.clear()  # A packet cannot span a device reboot.
                 cellular_stale = True
                 connection_label.configure(text="USB reconnected", fg="gray")
-            receive_buffer.extend(data)
 
         text, color = driver_display.view(time.monotonic())
         driver_label.configure(text=text, fg=color)
 
-        while True:
-            candidates = [receive_buffer.find(marker) for marker in maximum_lengths]
-            candidates = [index for index in candidates if index >= 0]
-            marker_index = min(candidates) if candidates else -1
-            if marker_index < 0:
-                del receive_buffer[:-3]
-                break
-            if marker_index:
-                del receive_buffer[:marker_index]
-            if len(receive_buffer) < 8:
-                break
-
-            packet_type = bytes(receive_buffer[:4])
-            payload_length = struct.unpack(">I", receive_buffer[4:8])[0]
-            if (packet_type not in maximum_lengths or payload_length == 0 or
-                    payload_length > maximum_lengths[packet_type]):
-                del receive_buffer[:4]
-                continue
-            if len(receive_buffer) < 8 + payload_length:
-                break
-            payload = bytes(receive_buffer[8:8 + payload_length])
-            del receive_buffer[:8 + payload_length]
-
+        for packet_type, payload in packet_reader.feed(data or b"", time.monotonic()):
             if packet_type == b"BSMP":
                 try:
                     sample = json.loads(payload.decode("utf-8"))

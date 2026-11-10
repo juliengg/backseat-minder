@@ -11,7 +11,7 @@
 namespace {
 const char *TAG = "beacon_tracker";
 // The supplied fob must advertise this fixed address (no address rotation).
-const esp_bd_addr_t TARGET_MAC = {0x78, 0x9f, 0x38, 0x08, 0x0b, 0xe5};
+const esp_bd_addr_t TARGET_MAC = {0x78, 0x9f, 0x38, 0x0f, 0xf4, 0x43};
 constexpr int RSSI_THRESHOLD = -75;
 constexpr int RSSI_HYSTERESIS = 5;
 constexpr int WIN_SIZE = 6;
@@ -29,21 +29,13 @@ bool s_checking = true;
 bool s_running = false;
 bool s_stopping = true;
 
-// Caller holds s_lock. Match the supplied sample's upper median for even n.
-int median_rssi()
+// Caller holds s_lock and s_count is nonzero. Average the latest WIN_SIZE
+// advertisements (or all available samples while the window fills).
+int average_rssi()
 {
-    int values[WIN_SIZE];
-    for (int i = 0; i < s_count; ++i) values[i] = s_rssi[i];
-    for (int i = 1; i < s_count; ++i) {
-        const int value = values[i];
-        int j = i - 1;
-        while (j >= 0 && values[j] > value) {
-            values[j + 1] = values[j];
-            --j;
-        }
-        values[j + 1] = value;
-    }
-    return values[s_count / 2];
+    int sum = 0;
+    for (int i = 0; i < s_count; ++i) sum += s_rssi[i];
+    return sum / s_count;
 }
 
 void mark_unavailable()
@@ -190,19 +182,19 @@ BeaconStatus beacon_tracker_status()
     // Read time inside the lock so it cannot precede a just-arrived packet.
     const TickType_t now = xTaskGetTickCount();
     const bool fresh = s_count && now - s_last_seen <= pdMS_TO_TICKS(BEACON_TIMEOUT_MS);
-    const int median = fresh ? median_rssi() : 0;
+    const int average = fresh ? average_rssi() : 0;
     if (s_running && !fresh &&
         (s_count || now - s_init_tick > pdMS_TO_TICKS(BEACON_TIMEOUT_MS))) {
         s_near = false;
         s_checking = false;
     }
     else if (s_running && fresh && s_count >= MIN_SAMPLES) {
-        if (median >= RSSI_THRESHOLD) s_near = true;
-        else if (median < RSSI_THRESHOLD - RSSI_HYSTERESIS) s_near = false;
+        if (average >= RSSI_THRESHOLD) s_near = true;
+        else if (average < RSSI_THRESHOLD - RSSI_HYSTERESIS) s_near = false;
         s_checking = false;
     }
     const BeaconStatus status = {s_running,
-        s_near, s_running && fresh, median, s_checking};
+        s_near, s_running && fresh, average, s_checking};
     portEXIT_CRITICAL(&s_lock);
     return status;
 }
