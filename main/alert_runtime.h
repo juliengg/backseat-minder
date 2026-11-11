@@ -2,6 +2,8 @@
 #include "alert_workflow.h"
 #include "beacon_tracker.h"
 void alert_runtime_init();
+// Main-task cancellation. The cellular worker stops the secondary asynchronously.
+void alert_runtime_cancel();
 void alert_runtime_poll(bool presence, const BeaconStatus &driver);
 void alert_runtime_sample(float temperature_f, bool valid);
 bool alert_runtime_active();

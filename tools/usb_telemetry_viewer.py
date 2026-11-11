@@ -184,7 +184,7 @@ class PacketReader:
     """Decode multiplexed USB packets, discarding interrupted transfers."""
 
     maximum_lengths = {
-        b"BSMF": 200_000, b"BSMT": 512, b"BSMH": 8_000, b"BSMD": 5,
+        b"BSMF": 200_000, b"BSMT": 1024, b"BSMH": 8_000, b"BSMD": 5,
         b"BSMC": 10000, b"BSMP": 512,
     }
 

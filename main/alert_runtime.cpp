@@ -48,12 +48,15 @@ void alert_runtime_init() {
     }
     cellular_link_set_sms_handler(incoming);
 }
+void alert_runtime_cancel() {
+    workflow.cancel();
+    persistence_ok = latch(true);
+    cellular_link_cancel_alert();
+    cellular_diagnostics_record("ALERT_CANCELLED");
+}
 void alert_runtime_poll(bool presence,const BeaconStatus &driver) {
+    if(stop_requested.exchange(false)) alert_runtime_cancel();
     const auto before=workflow.state;
-    if(stop_requested.exchange(false)) {
-        workflow.cancel(); persistence_ok=latch(true);
-        cellular_diagnostics_record("ALERT_CANCELLED");
-    }
     const bool near=driver.available && !driver.checking && driver.driver_present;
     const bool away=driver.available && !driver.checking && !driver.driver_present;
     workflow.tick(now_ms(),away,near,presence);

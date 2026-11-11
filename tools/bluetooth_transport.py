@@ -147,7 +147,8 @@ class BluetoothSerial:
                         continue
                     self.status = 'Connecting/pairing Bluetooth; approve the OS prompt if shown...'
                     async with self.client_factory(device, disconnected_callback=self._disconnected,
-                                                   pair=True,timeout=30,services=[SERVICE_UUID]) as client:
+                                                   pair=True,timeout=30,services=[SERVICE_UUID],
+                                                   winrt={"use_cached_services": False}) as client:
                         self._client = client
                         # Open before notify registration: an immediate first packet is valid.
                         with self._lock:

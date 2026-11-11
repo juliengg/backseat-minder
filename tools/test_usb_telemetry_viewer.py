@@ -1,3 +1,4 @@
+import json
 """Run with: python -m unittest discover -s tools -p 'test_*.py'."""
 
 import struct
@@ -366,6 +367,19 @@ if __name__ == "__main__":
 
 
 class StreamRecoveryTests(unittest.TestCase):
+    def test_extended_sensor_report_reaches_driver_display(self):
+        sample = {"driver_present": False, "beacon_available": True,
+                  "beacon_rssi_valid": True, "beacon_rssi_dbm": -85,
+                  "alert_state": "active", "forecast_valid": True,
+                  "forecast_7min_f": 105.0, "padding": "x" * 400}
+        payload = json.dumps(sample).encode()
+        self.assertGreater(len(payload), 512)
+        packets = PacketReader().feed(self.packet(b"BSMT", payload), 0)
+        self.assertEqual(packets, [(b"BSMT", payload)])
+        display = DriverDisplay()
+        display.observe(json.loads(packets[0][1]), 0)
+        self.assertIn("Driver present: NO", display.view(0)[0])
+
     def packet(self, marker, payload):
         return marker + struct.pack(">I", len(payload)) + payload
 

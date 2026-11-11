@@ -217,6 +217,7 @@ void ble_telemetry_gap_event(esp_gap_ble_cb_event_t event,esp_ble_gap_cb_param_t
  default:break;
  }
 }
+bool ble_telemetry_client_connected(){return active && !stopping && connected;}
 bool ble_telemetry_connected(){return active && !stopping && connected && encrypted && subscribed;}
 bool ble_telemetry_take_sms_request(){return sms_request.exchange(false);}
 bool ble_telemetry_send_packet(const char magic[4],const uint8_t *data,size_t size){

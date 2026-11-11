@@ -36,7 +36,7 @@ int main() {
     for(uint64_t t=0;t<=180000;t+=3000) w.sample(1000+t,90+2*float(t)/60000,true);
     w.tick(181000,true,false,true);
     assert(std::fabs(w.forecast_f-110)<.001);
-    assert(w.next(a)&&a.kind==Kind::Call&&!std::strcmp(a.number,"+15129622126"));
+    assert(w.next(a)&&a.kind==Kind::Call&&!std::strcmp(a.number,"+13464421981"));
     w.submitted(a.kind); assert(w.call_attempted); drain(w,Kind::Text);
     for(uint64_t t=183000;t<240000;t+=3000) {w.sample(1000+t,110,true);w.tick(1000+t,true,false,true);assert(!w.next(a));}
     w.cancel(); assert(w.state==State::Suppressed&&!w.next(a));

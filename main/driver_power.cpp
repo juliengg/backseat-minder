@@ -1,5 +1,6 @@
 #include "driver_power.h"
 #include "beacon_tracker.h"
+#include "ble_telemetry.h"
 #include "usb_telemetry.h"
 
 #include "driver/gpio.h"
@@ -42,7 +43,7 @@ bool driver_power_timer_wakeup() { return s_timer_wakeup; }
 static void sleep_if_allowed(bool action_busy, bool cancelled)
 {
     usb_telemetry_poll_commands();
-    if (action_busy || usb_telemetry_sms_pending() ||
+    if (action_busy || ble_telemetry_client_connected() || usb_telemetry_sms_pending() ||
         esp_timer_get_time() < s_sleep_after || buttons_held()) return;
     const auto status = beacon_tracker_status();
     // Even suppressed probes need enough time to qualify three fresh beacon samples.
@@ -61,7 +62,7 @@ static void sleep_if_allowed(bool action_busy, bool cancelled)
         return;
     }
     usb_telemetry_poll_commands();
-    if (usb_telemetry_sms_pending() || buttons_held() || (!cancelled && !beacon_tracker_driver_near())) return;
+    if (ble_telemetry_client_connected() || usb_telemetry_sms_pending() || buttons_held() || (!cancelled && !beacon_tracker_driver_near())) return;
     if (!beacon_tracker_stop()) {
         ESP_LOGE(TAG, "BLE shutdown failed; staying active");
         beacon_tracker_init();

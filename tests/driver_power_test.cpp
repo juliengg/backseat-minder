@@ -9,6 +9,8 @@ static BeaconStatus driver{true, true, true, -60};
 static bool stop_ok = true;
 static bool cancelledProbe = false;
 static bool sms_pending = false;
+static bool viewer_connected = false;
+bool ble_telemetry_client_connected() { return viewer_connected; }
 static bool sms_during_flush = false;
 static int boot_level = 1, setup_level = 1, stopped = 0, announced = 0, reinits = 0;
 static uint64_t timer_us = 0;
@@ -53,6 +55,11 @@ int main() {
     driver.checking = false; sms_pending = true; driver_power_sleep_if_present(false);
     sms_pending = false;
     assert(stopped == 0 && announced == 0); // Busy, BLE failure, AWAY and buttons defer sleep.
+    viewer_connected = true;
+    driver_power_sleep_if_present(false);
+    driver_power_sleep_cancelled(false);
+    assert(stopped == 0 && announced == 0); // Pairing and telemetry keep the viewer connected.
+    viewer_connected = false;
     sms_during_flush = true;
     driver_power_sleep_if_present(false);
     assert(stopped == 1 && announced == 1 && reinits == 1); // A late explicit SMS cancels sleep.

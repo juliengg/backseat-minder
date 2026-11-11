@@ -200,7 +200,19 @@ BeaconStatus beacon_tracker_status()
     }
     const BeaconStatus status = {s_running,
         s_near, s_running && fresh, average, s_checking};
+    static TickType_t last_report = 0;
+    static BeaconStatus previous = {};
+    const bool report = status.available != previous.available ||
+        status.checking != previous.checking || status.driver_present != previous.driver_present ||
+        status.rssi_valid != previous.rssi_valid || now - last_report >= pdMS_TO_TICKS(5000);
+    previous = status;
+    if (report) last_report = now;
     portEXIT_CRITICAL(&s_lock);
+    if (report) {
+        ESP_LOGI(TAG, "Driver scan: available=%d checking=%d present=%d signal=%d RSSI=%d dBm",
+                 status.available, status.checking, status.driver_present,
+                 status.rssi_valid, status.rssi_dbm);
+    }
     return status;
 }
 

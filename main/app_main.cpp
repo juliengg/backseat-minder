@@ -106,7 +106,7 @@ extern "C" void app_main()
     gpio_set_level(LED_GPIO, 0);
 
     bool setup_requested_during_probe = false;
-    bool deferred_setup = false;
+    bool setup_button_held = false;
     if ((driver_power_timer_wakeup() || suppressed_boot) && beacon_ready) {
         // Do not start the camera, AI, sensors or cellular worker just to check
         // a still-near fob. A missing/weak fob exits into full monitoring.
@@ -213,15 +213,20 @@ extern "C" void app_main()
             }
         }
 
-        if (setup_requested_during_probe || setup_mode_button_pressed()) {
+        const bool setup_pressed = setup_mode_button_pressed();
+        if (setup_requested_during_probe || (setup_pressed && !setup_button_held)) {
             setup_requested_during_probe = false;
-            deferred_setup = true;
+            if (beacon_tracker_driver_near()) {
+                // A nearby driver can configure the device while still detected.
+                // The cellular worker continues cancellation during setup.
+                alert_runtime_cancel();
+                ESP_LOGI("app_main", "Setup button pressed; driver nearby, alert cancelled for configuration");
+                enter_setup_mode();
+            } else {
+                ESP_LOGW("app_main", "Setup requires confirmed driver presence; bring the beacon nearby and press again");
+            }
         }
-        // Setup blocks/reboots the main task. Defer it during an active incident.
-        if(deferred_setup && !alert_runtime_active() && !cellular_link_busy()) {
-            deferred_setup=false;
-            enter_setup_mode();
-        }
+        setup_button_held = setup_pressed;
 
         const BeaconStatus driver = beacon_tracker_status();
         if (xTaskGetTickCount() - last_driver_report >= pdMS_TO_TICKS(500)) {

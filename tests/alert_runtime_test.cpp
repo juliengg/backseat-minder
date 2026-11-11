@@ -35,7 +35,18 @@ int main(){
     assert(!alert_runtime_suppressed()&&!savedLatch);
     now=8000000;alert_runtime_poll(true,away);
     for(int i=0;i<=60;++i){now=8000000+i*3000000LL;alert_runtime_sample(90+float(i)/10,true);alert_runtime_poll(true,away);}
-    assert(calls.size()==1&&calls[0]=="+15129622126");
+    assert(calls.size()==1&&calls[0]=="+13464421981");
+    // A physical setup request cancels with presence detected and the driver away,
+    // even while the modem is busy. Monitoring cannot restart the same incident.
+    const auto text_count = texts.size();
+    const auto cancel_count = cancels;
+    linkBusy = true;
+    alert_runtime_cancel();
+    assert(alert_runtime_suppressed() && savedLatch == 1 && cancels == cancel_count + 1);
+    now += 400000000;
+    alert_runtime_poll(true, away);
+    assert(texts.size() == text_count && calls.size() == 1);
+    linkBusy = false;
     // Reboot of a latched incident suppresses rather than placing a second call.
     workflow=alert::Workflow{};alert_runtime_init();assert(alert_runtime_suppressed());
     assert(calls.size()==1);
