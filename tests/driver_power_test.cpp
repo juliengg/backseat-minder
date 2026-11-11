@@ -30,7 +30,7 @@ bool beacon_tracker_init(bool) { ++reinits; return true; }
 void usb_telemetry_send_driver_status(const BeaconStatus &status, TelemetryPowerState power) {
     assert(status.driver_present);
     if (power == TelemetryPowerState::SleepPending) {
-        assert(status.available && stopped > 0 && stop_ok); ++announced;
+        assert(status.available); ++announced;
     } else assert(power == TelemetryPowerState::Active);
 }
 void usb_telemetry_flush() { if (sms_during_flush) sms_pending = true; }
@@ -54,7 +54,7 @@ int main() {
     assert(stopped == 0 && announced == 0); // Busy, BLE failure, AWAY and buttons defer sleep.
     sms_during_flush = true;
     driver_power_sleep_if_present(false);
-    assert(stopped == 1 && announced == 1 && reinits == 1); // A late explicit SMS cancels sleep.
+    assert(stopped == 0 && announced == 1 && reinits == 0); // A late SMS cancels sleep before BLE shutdown.
     sms_during_flush = sms_pending = false;
     stopped = announced = reinits = 0;
     wake_error = ESP_FAIL;
@@ -62,7 +62,7 @@ int main() {
     assert(stopped == 0 && announced == 0);
     wake_error = ESP_OK; now_us += 30000001;
     try { driver_power_sleep_if_present(false); assert(false); } catch (Slept &) {}
-    assert(timer_us == 8000000 && stopped == 1 && announced == 1);
+    assert(timer_us == 8000000 && stopped == 1 && announced == 2); // BLE before shutdown, USB after.
     wake_cause = ESP_SLEEP_WAKEUP_TIMER; now_us = 0;
     assert(!driver_power_init() && driver_power_timer_wakeup());
     assert(s_sleep_cookie == 0); // Consume only our own retained sleep marker.

@@ -1,4 +1,6 @@
 #include "beacon_tracker.h"
+#include "ble_telemetry.h"
+#include "ble_telemetry_gap.h"
 
 #include <cstring>
 #include "esp_bt.h"
@@ -63,6 +65,7 @@ void gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
     const bool stopping = s_stopping;
     portEXIT_CRITICAL(&s_lock);
     if (stopping) return;
+    ble_telemetry_gap_event(event, param);
 
     switch (event) {
     case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
@@ -128,6 +131,7 @@ bool beacon_tracker_stop()
     portENTER_CRITICAL(&s_lock);
     s_stopping = true;
     portEXIT_CRITICAL(&s_lock);
+    ble_telemetry_stop();
     mark_unavailable();
     bool ok = true;
     if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED)
@@ -172,7 +176,8 @@ bool beacon_tracker_init(bool previously_near)
         beacon_tracker_stop();
         return false;
     }
-    ESP_LOGI(TAG, "Scanning for driver fob 78:9f:38:08:0b:e5");
+    if (!ble_telemetry_start()) ESP_LOGW(TAG, "Bluetooth telemetry unavailable; beacon scanning continues");
+    ESP_LOGI(TAG, "Scanning for driver fob 78:9f:38:0f:f4:43");
     return true;
 }
 

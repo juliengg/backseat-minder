@@ -60,14 +60,22 @@ void driver_power_sleep_if_present(bool action_busy)
     }
     usb_telemetry_poll_commands();
     if (usb_telemetry_sms_pending() || buttons_held() || !beacon_tracker_driver_near()) return;
+    // BLE must announce the pending sleep before its shared host is disabled.
+    usb_telemetry_send_driver_status(status, TelemetryPowerState::SleepPending);
+    usb_telemetry_flush();
+    usb_telemetry_poll_commands();
+    if (usb_telemetry_sms_pending() || buttons_held() || !beacon_tracker_driver_near()) {
+        usb_telemetry_send_driver_status(beacon_tracker_status(), TelemetryPowerState::Active);
+        return;
+    }
     if (!beacon_tracker_stop()) {
         ESP_LOGE(TAG, "BLE shutdown failed; staying active");
         beacon_tracker_init();
+        usb_telemetry_send_driver_status(beacon_tracker_status(), TelemetryPowerState::Active);
         s_sleep_after = esp_timer_get_time() + BUTTON_AWAKE_US;
         return;
     }
-    // Announce only after BLE shutdown succeeds. The viewer retains this report
-    // while native USB is off and while subsequent timer probes are checking.
+    // Repeat on USB after shutdown succeeds, retaining its existing behavior.
     usb_telemetry_send_driver_status(status, TelemetryPowerState::SleepPending);
     usb_telemetry_flush();
     usb_telemetry_poll_commands();

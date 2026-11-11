@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include "beacon_tracker.h"
 
-// Starts the ESP32-S3 native USB Serial/JTAG channel used for optional
-// development telemetry. Failure to connect USB never affects device behavior.
+// Starts optional USB output and the shared USB/BLE packet serialization mutex.
+// BLE service lifecycle belongs to beacon_tracker. USB failure does not stop BLE.
 void usb_telemetry_init();
 
 // Nonblocking, bounded command poll; also used during beacon-only wake probes.
@@ -32,7 +32,7 @@ void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPower
 void usb_telemetry_flush();
 
 // Sends one JPEG frame with a binary BSMF header. This is used only by the
-// development camera viewer connected to native USB.
+// development camera viewer connected over USB or BLE.
 bool usb_telemetry_send_camera_frame(const uint8_t *jpeg, size_t jpeg_length);
 
 // Sends a 32x24 MLX90640 CSV frame in a BSMH packet.
@@ -42,5 +42,6 @@ bool usb_telemetry_send_thermal_frame(const char *csv, size_t csv_length);
 bool usb_telemetry_send_heat_trace_bounds(bool detected, uint8_t x, uint8_t y,
                                           uint8_t width, uint8_t height);
 
-// Returns true only while a native USB host is connected.
+// Returns true when USB output is initialized or a BLE viewer is subscribed.
+// USB hardware connectivity is determined by bounded writes (see implementation).
 bool usb_telemetry_host_connected();

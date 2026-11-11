@@ -6,6 +6,11 @@
 #include "esp_bt_main.h"
 #include "esp_gap_ble_api.h"
 #include "freertos/task.h"
+#include "ble_telemetry.h"
+
+bool ble_telemetry_start() { return true; }
+void ble_telemetry_stop() {}
+void ble_telemetry_gap_event(esp_gap_ble_cb_event_t, esp_ble_gap_cb_param_t *) {}
 
 static TickType_t ticks = 0;
 static esp_gap_ble_cb_t callback = nullptr;

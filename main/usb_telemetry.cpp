@@ -1,4 +1,5 @@
 #include "usb_telemetry.h"
+#include "ble_telemetry.h"
 #include "driver_power.h"
 #include "cellular_diagnostics.h"
 #include "cellular_link.h"
@@ -39,6 +40,8 @@ bool write_bytes(const uint8_t *data, size_t length)
 
 bool send_packet(const char magic[4], const uint8_t *payload, size_t payload_length)
 {
+    const bool bluetooth_sent = ble_telemetry_send_packet(magic, payload, payload_length);
+    if (!s_ready) return bluetooth_sent;
     const uint8_t header[] = {
         static_cast<uint8_t>(magic[0]), static_cast<uint8_t>(magic[1]),
         static_cast<uint8_t>(magic[2]), static_cast<uint8_t>(magic[3]),
@@ -47,24 +50,25 @@ bool send_packet(const char magic[4], const uint8_t *payload, size_t payload_len
         static_cast<uint8_t>((payload_length >> 8) & 0xFF),
         static_cast<uint8_t>(payload_length & 0xFF),
     };
-    return write_bytes(header, sizeof(header)) && write_bytes(payload, payload_length);
+    const bool usb_sent = write_bytes(header, sizeof(header)) && write_bytes(payload, payload_length);
+    return usb_sent || bluetooth_sent;
 }
 
 } // namespace
 
 void usb_telemetry_init()
 {
+    s_write_mutex = xSemaphoreCreateMutex();
+    if (!s_write_mutex) {
+        ESP_LOGW(TAG, "Telemetry mutex could not be created");
+        return;
+    }
     usb_serial_jtag_driver_config_t config = {};
     config.tx_buffer_size = 512;
     config.rx_buffer_size = 128;
 
     const esp_err_t err = usb_serial_jtag_driver_install(&config);
     if (err == ESP_OK) {
-        s_write_mutex = xSemaphoreCreateMutex();
-        if (!s_write_mutex) {
-            ESP_LOGW(TAG, "Native USB telemetry mutex could not be created");
-            return;
-        }
         s_ready = true;
         ESP_LOGI(TAG, "Native USB telemetry is ready");
     } else {
@@ -75,10 +79,9 @@ void usb_telemetry_init()
 
 void usb_telemetry_poll_commands()
 {
-    if (!s_ready) return;
     char bytes[128];
-    const int count = usb_serial_jtag_read_bytes(bytes, sizeof(bytes), 0);
-    bool requested = false;
+    const int count = s_ready ? usb_serial_jtag_read_bytes(bytes, sizeof(bytes), 0) : 0;
+    bool requested = ble_telemetry_take_sms_request();
     for (int i = 0; i < count; ++i) {
         if (s_command.push(bytes[i]) == cellular::FrameEvent::Ready) {
             if (strcmp(s_command.data(), "SEND_SMS") == 0) {
@@ -105,7 +108,7 @@ bool usb_telemetry_host_connected()
     // The USB Serial/JTAG connection monitor is not reliable on every board
     // routing of the native USB pins. A write with a short timeout is the
     // authoritative connectivity test, so do not suppress output here.
-    return s_ready;
+    return s_ready || ble_telemetry_connected();
 }
 
 void usb_telemetry_send(float temperature_f, float humidity_percent,
@@ -113,7 +116,7 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool mmwave_presence_detected, bool thermal_heat_detected,
                         bool human_presence_detected, const BeaconStatus &driver)
 {
-    if (!usb_telemetry_host_connected() ||
+    if (!s_write_mutex || !usb_telemetry_host_connected() ||
         xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
         return;
     }
@@ -161,7 +164,7 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
 
 void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPowerState power)
 {
-    if (!s_ready || xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
+    if (!s_write_mutex || xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
     char message[320];
     const int length = snprintf(message, sizeof(message),
         "{\"uptime_ms\":%lld,\"driver_present\":%s,\"beacon_available\":%s,"
@@ -182,6 +185,7 @@ void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPower
 
 void usb_telemetry_flush()
 {
+    ble_telemetry_flush();
     if (!s_ready || xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
     // Bounded so an absent USB host never prevents standalone sleep.
     usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
@@ -190,7 +194,7 @@ void usb_telemetry_flush()
 
 bool usb_telemetry_send_camera_frame(const uint8_t *jpeg, size_t jpeg_length)
 {
-    if (!jpeg || jpeg_length == 0 || !usb_telemetry_host_connected() ||
+    if (!s_write_mutex || !jpeg || jpeg_length == 0 || !usb_telemetry_host_connected() ||
         xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
         return false;
     }
@@ -203,7 +207,7 @@ bool usb_telemetry_send_camera_frame(const uint8_t *jpeg, size_t jpeg_length)
 
 bool usb_telemetry_send_thermal_frame(const char *csv, size_t csv_length)
 {
-    if (!csv || csv_length == 0 || !usb_telemetry_host_connected() ||
+    if (!s_write_mutex || !csv || csv_length == 0 || !usb_telemetry_host_connected() ||
         xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
         return false;
     }
@@ -218,7 +222,7 @@ bool usb_telemetry_send_thermal_frame(const char *csv, size_t csv_length)
 bool usb_telemetry_send_heat_trace_bounds(bool detected, uint8_t x, uint8_t y,
                                           uint8_t width, uint8_t height)
 {
-    if (!usb_telemetry_host_connected() ||
+    if (!s_write_mutex || !usb_telemetry_host_connected() ||
         xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
         return false;
     }

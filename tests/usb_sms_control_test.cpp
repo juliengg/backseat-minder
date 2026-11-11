@@ -7,6 +7,16 @@
 
 static std::string rx, tx;
 static bool link_busy = false;
+static bool ble_sms = false;
+static std::string ble_tx;
+bool ble_telemetry_take_sms_request() { const bool result = ble_sms; ble_sms = false; return result; }
+bool ble_telemetry_connected() { return true; }
+void ble_telemetry_flush() {}
+bool ble_telemetry_send_packet(const char magic[4], const uint8_t *payload, size_t length) {
+    ble_tx.append(magic, 4);
+    ble_tx.append(reinterpret_cast<const char *>(payload), length);
+    return true;
+}
 static unsigned reads = 0;
 static int64_t now_us = 9000000;
 int64_t esp_timer_get_time() { return now_us; }
@@ -99,6 +109,22 @@ int main() {
     assert(json.find("\"sms_control\":true") != std::string::npos);
     assert(json.find("\"sms_busy\":true") != std::string::npos);
     assert(json.find("\"sms_requests\":4") != std::string::npos);
+    assert(ble_tx.find("BSMT") != std::string::npos);
+    assert(ble_tx.find("BSMC") != std::string::npos);
+    assert(ble_tx.find("\"power_state\":\"sleep_pending\"") != std::string::npos);
+    ble_sms = true;
+    usb_telemetry_poll_commands();
+    assert(usb_telemetry_sms_pending() && s_sms_requests == 5);
+    assert(usb_telemetry_sms_requested());
+    assert(!usb_telemetry_sms_requested()); // BLE uses the same receipt and consumption path.
+    // Bluetooth telemetry and commands also work if the USB driver is unavailable.
+    s_ready = false;
+    tx.clear(); ble_tx.clear();
+    ble_sms = true;
+    assert(usb_telemetry_sms_requested() && s_sms_requests == 6);
+    usb_telemetry_send(70, 50, true, false, false, false, false, {true, false, true, -81});
+    assert(tx.empty() && ble_tx.find("BSMT") != std::string::npos);
+    assert(ble_tx.find("BSMC") != std::string::npos);
     delete s_write_mutex;
     puts("PASS: bounded nonblocking USB commands, recovery, coalescing and receipt telemetry");
 }
