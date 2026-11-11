@@ -1,4 +1,5 @@
 #include "usb_telemetry.h"
+#include "ble_telemetry.h"
 #include "driver_power.h"
 #include "cellular_diagnostics.h"
 #include "cellular_link.h"
@@ -47,24 +48,24 @@ bool send_packet(const char magic[4], const uint8_t *payload, size_t payload_len
         static_cast<uint8_t>((payload_length >> 8) & 0xFF),
         static_cast<uint8_t>(payload_length & 0xFF),
     };
-    return write_bytes(header, sizeof(header)) && write_bytes(payload, payload_length);
+    const bool wireless=ble_telemetry_send_packet(magic,payload,payload_length);
+    const bool wired=s_ready && write_bytes(header,sizeof(header)) && write_bytes(payload,payload_length);
+    return wired || wireless;
 }
 
 } // namespace
 
 void usb_telemetry_init()
 {
+    ble_telemetry_init();
+    s_write_mutex=xSemaphoreCreateMutex();
+    if(!s_write_mutex) { ESP_LOGW(TAG,"Telemetry mutex allocation failed");return; }
     usb_serial_jtag_driver_config_t config = {};
     config.tx_buffer_size = 512;
     config.rx_buffer_size = 128;
 
     const esp_err_t err = usb_serial_jtag_driver_install(&config);
     if (err == ESP_OK) {
-        s_write_mutex = xSemaphoreCreateMutex();
-        if (!s_write_mutex) {
-            ESP_LOGW(TAG, "Native USB telemetry mutex could not be created");
-            return;
-        }
         s_ready = true;
         ESP_LOGI(TAG, "Native USB telemetry is ready");
     } else {
@@ -75,10 +76,9 @@ void usb_telemetry_init()
 
 void usb_telemetry_poll_commands()
 {
-    if (!s_ready) return;
     char bytes[128];
-    const int count = usb_serial_jtag_read_bytes(bytes, sizeof(bytes), 0);
-    bool requested = false;
+    const int count = s_ready ? usb_serial_jtag_read_bytes(bytes,sizeof(bytes),0) : 0;
+    bool requested = ble_telemetry_take_sms_request();
     for (int i = 0; i < count; ++i) {
         if (s_command.push(bytes[i]) == cellular::FrameEvent::Ready) {
             if (strcmp(s_command.data(), "SEND_SMS") == 0) {
@@ -105,7 +105,7 @@ bool usb_telemetry_host_connected()
     // The USB Serial/JTAG connection monitor is not reliable on every board
     // routing of the native USB pins. A write with a short timeout is the
     // authoritative connectivity test, so do not suppress output here.
-    return s_ready;
+    return s_write_mutex && (s_ready || ble_telemetry_connected());
 }
 
 namespace {
@@ -175,7 +175,7 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
 
 void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPowerState power)
 {
-    if (!s_ready || xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
+    if (!s_write_mutex || (!s_ready && !ble_telemetry_connected()) || xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
     char message[320];
     const int length = snprintf(message, sizeof(message),
         "{\"uptime_ms\":%lld,\"driver_present\":%s,\"beacon_available\":%s,"

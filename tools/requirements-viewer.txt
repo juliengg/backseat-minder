@@ -1,0 +1,4 @@
+pyserial>=3.5
+pillow
+matplotlib
+numpy

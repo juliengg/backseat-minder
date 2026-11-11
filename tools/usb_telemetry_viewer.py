@@ -15,6 +15,7 @@ import sys
 import time
 
 import serial
+from bluetooth_transport import BluetoothConnection
 
 
 CELLULAR_STATUSES = {
@@ -136,7 +137,7 @@ class SmsControl:
                 raise OSError("incomplete USB write")
         except (serial.SerialException, OSError):
             # A failed/partial write may still have reached the device. Do not retry.
-            self.message = "USB write failed - SMS outcome unknown; check before retrying."
+            self.message = ("Bluetooth" if getattr(self.device,"is_bluetooth",False) is True else "USB") + " write failed - SMS outcome unknown; check before retrying."
 
 
 class UsbConnection:
@@ -315,11 +316,26 @@ def update_detection_labels(labels: dict, sample: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="View Backseat Minder cameras and telemetry")
-    parser.add_argument("--port", required=True, help="COM port, e.g. COM4")
+    transport=parser.add_mutually_exclusive_group(required=True)
+    transport.add_argument("--port",help="Native USB COM port, e.g. COM15")
+    transport.add_argument("--bluetooth",action="store_true",help="Use paired Bluetooth LE instead of USB")
+    parser.add_argument("--bluetooth-address",help="Optional address/UUID of a specific BLE device")
+    parser.add_argument("--bluetooth-name",default="Backseat Minder")
     parser.add_argument("--baud", type=int, default=115200)
     args = parser.parse_args()
+    if args.bluetooth_address and not args.bluetooth:
+        parser.error("--bluetooth-address requires --bluetooth")
     device = None
     try:
+        if args.bluetooth:
+            try:
+                from bluetooth_transport import BluetoothSerial
+                device=BluetoothSerial(args.bluetooth_address,args.bluetooth_name)
+            except ImportError:
+                print("Bluetooth mode needs: python -m pip install 'bleak>=1.0'",file=sys.stderr)
+                return 1
+            print("Bluetooth mode: searching for Backseat Minder; approve pairing if prompted.")
+            return show_viewer(device)
         # The COM port may not exist until the next timed beacon check.
         device = serial.Serial(port=None, baudrate=args.baud, timeout=0, write_timeout=0.25)
         device.dtr = False
@@ -338,7 +354,7 @@ def main() -> int:
             device.close()
 
 
-def show_viewer(device: serial.Serial) -> int:
+def show_viewer(device) -> int:
     try:
         import tkinter as tk
         import numpy as np
@@ -351,6 +367,8 @@ def show_viewer(device: serial.Serial) -> int:
               "python -m pip install pillow matplotlib numpy", file=sys.stderr)
         return 1
 
+    bluetooth=getattr(device,"is_bluetooth",False) is True
+    transport_name="Bluetooth" if bluetooth else "USB"
     root = tk.Tk()
     root.title("Backseat Minder Camera and Thermal View")
     view_height = 360
@@ -412,7 +430,7 @@ def show_viewer(device: serial.Serial) -> int:
                             anchor="w", justify="left", wraplength=310,
                             fg="gray", font=("TkDefaultFont", 10, "bold"))
     driver_label.pack(fill="x", pady=(8, 0))
-    connection_label = tk.Label(values_frame, text="USB connected", anchor="w",
+    connection_label = tk.Label(values_frame, text=f"{transport_name} connected", anchor="w",
                                 justify="left", wraplength=310, fg="gray")
     connection_label.pack(fill="x")
 
@@ -536,7 +554,7 @@ def show_viewer(device: serial.Serial) -> int:
     cellular_stale = False
     cellular_rendered_events = None
     driver_display = DriverDisplay()
-    connection = UsbConnection(device)
+    connection = BluetoothConnection(device) if bluetooth else UsbConnection(device)
 
     def update_driver(sample):
         driver_display.observe(sample, time.monotonic())
@@ -544,10 +562,10 @@ def show_viewer(device: serial.Serial) -> int:
         driver_label.configure(text=text, fg=color)
         if sample.get("deep_sleep_pending") is True or sample.get("power_state") == "beacon_probe":
             sms_control.last_received = None
-            connection_label.configure(text="Sleep announced; USB will reconnect for beacon checks",
+            connection_label.configure(text=f"Sleep announced; {transport_name} will reconnect for beacon checks",
                                         fg="gray")
         else:
-            connection_label.configure(text="USB connected", fg="gray")
+            connection_label.configure(text=f"{transport_name} connected", fg="gray")
 
     def poll_device() -> None:
         nonlocal thermal_frame_count, cellular_last_received, cellular_stale
@@ -559,13 +577,13 @@ def show_viewer(device: serial.Serial) -> int:
             sms_control.last_received = None
             refresh_sms_button()
             connection_label.configure(
-                text="USB disconnected (sleep or unplugged); reconnecting automatically.\n"
-                     "Driver flag shows the last report.", fg="gray")
+                text=((device.status if bluetooth else "USB disconnected (sleep or unplugged); reconnecting automatically.")
+                          + "\nDriver flag shows the last report."), fg="gray")
         else:
             if connection.generation != previous_generation:
                 receive_buffer.clear()  # A packet cannot span a device reboot.
                 cellular_stale = True
-                connection_label.configure(text="USB reconnected", fg="gray")
+                connection_label.configure(text=f"{transport_name} reconnected", fg="gray")
             receive_buffer.extend(data)
 
         text, color = driver_display.view(time.monotonic())

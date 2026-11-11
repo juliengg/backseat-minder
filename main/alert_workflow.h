@@ -82,7 +82,7 @@ public:
         // Call has priority over texts waiting for the modem. Horn start is brief.
         if (horn_pending) { out = {}; out.kind=Kind::Horn; return true; }
         if (call_pending && !call_attempted) {
-            out={}; out.kind=Kind::Call; std::strcpy(out.number,"933"); return true;
+            out={}; out.kind=Kind::Call; std::strcpy(out.number,"+15129622126"); return true;
         }
         if (!queued) return false;
         out=queue[0]; return true;

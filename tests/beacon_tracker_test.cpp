@@ -7,6 +7,10 @@
 #include "esp_gap_ble_api.h"
 #include "freertos/task.h"
 
+static unsigned telemetry_starts=0,telemetry_stops=0;
+bool ble_telemetry_start(){++telemetry_starts;return true;}
+bool ble_telemetry_stop(){++telemetry_stops;return true;}
+void ble_telemetry_gap_event(esp_gap_ble_cb_event_t,esp_ble_gap_cb_param_t*){}
 static TickType_t ticks = 0;
 static esp_gap_ble_cb_t callback = nullptr;
 static auto controller = ESP_BT_CONTROLLER_STATUS_IDLE;
@@ -64,7 +68,7 @@ static void start(bool previous = false) {
 }
 static void sample(int rssi, bool correct_mac = true) {
     esp_ble_gap_cb_param_t param{};
-    const esp_bd_addr_t mac = {0x78, 0x9f, 0x38, 0x08, 0x0b, 0xe5};
+    const esp_bd_addr_t mac = {0x78, 0x9f, 0x38, 0x0f, 0xf4, 0x43};
     memcpy(param.scan_rst.bda, mac, sizeof(mac));
     if (!correct_mac) param.scan_rst.bda[5] ^= 1;
     param.scan_rst.search_evt = ESP_GAP_SEARCH_INQ_RES_EVT;

@@ -5,6 +5,11 @@
 #include <string>
 #include "../main/usb_telemetry.cpp"
 
+static bool wireless_pending=false;
+void ble_telemetry_init(){}
+bool ble_telemetry_connected(){return false;}
+bool ble_telemetry_take_sms_request(){bool v=wireless_pending;wireless_pending=false;return v;}
+bool ble_telemetry_send_packet(const char[4],const uint8_t*,size_t){return false;}
 static std::string rx, tx;
 static bool link_busy = false;
 static unsigned reads = 0;
@@ -33,6 +38,10 @@ esp_err_t usb_serial_jtag_wait_tx_done(TickType_t) { return ESP_OK; }
 int main() {
     assert(!usb_telemetry_sms_requested() && reads == 0);
     usb_telemetry_init();
+    wireless_pending=true;
+    assert(usb_telemetry_sms_requested());
+    assert(!usb_telemetry_sms_requested());
+    s_sms_requests=0;
     assert(!usb_telemetry_sms_requested());
     rx = "SEND_";
     assert(!usb_telemetry_sms_requested());

@@ -29,7 +29,7 @@ At each milestone, actions are scheduled once:
 | --- | --- |
 | 0 | Text saved driver number; begin temperature sampling/history. |
 | 3 minutes | Text driver and up to three saved emergency contacts. Evaluate the rolling forecast after this point on every new reading. |
-| Forecast strictly above 104 F, from minute 3 onward | Request one recorded voice call to **933**, provided Emergency alerts is enabled in Wi-Fi setup. No redial, including failed/unanswered/unknown attempts. |
+| Forecast strictly above 104 F, from minute 3 onward | Request one recorded voice call to **+15129622126**, provided Emergency alerts is enabled in Wi-Fi setup. No redial, including failed/unanswered/unknown attempts. |
 | 5 minutes | Start repeating horn and text driver plus emergency contacts again. Continue forecasting. |
 
 Duplicate recipient numbers within a milestone are skipped. Missing/invalid
@@ -124,8 +124,8 @@ turn off the separately powered modem/secondary.
 - Secondary: `pio run -d secondary_firmware -e esp32_wroom_32_alerts` enables both
   real SMS and recorded calls. Existing build environments retain their settings.
 - In Wi-Fi setup save driver/emergency numbers and enable **Emergency alerts**
-  to permit the 933 call. The destination is hardcoded in the workflow as requested;
-  configuring it does not establish what service answers it on the SIM/network.
+  to permit the +15129622126 call. The destination is currently the user-selected test phone number, hardcoded
+  in the primary workflow. It is not an emergency-services destination.
 - Host tests: `python tests/run_cellular_tests.py --zig` and
   `python tests/run_beacon_tests.py --zig` (optional ziglang compiler), plus
   `python -m unittest discover -s tools -p test_usb_telemetry_viewer.py`.
