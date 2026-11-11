@@ -1,10 +1,10 @@
-# The following lines of boilerplate have to be in your project's
-# CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
 add_compile_options(-fdiagnostics-color=always)
+set(ESP_WHO_PATH "$ENV{ESP_WHO_PATH}" CACHE PATH "Legacy ESP-WHO checkout")
+if(NOT EXISTS "${ESP_WHO_PATH}/components")
+    message(FATAL_ERROR "Set ESP_WHO_PATH to your legacy ESP-WHO checkout. See PRIMARY_BUILD.md.")
+endif()
+set(EXTRA_COMPONENT_DIRS "${ESP_WHO_PATH}/components")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-set(EXTRA_COMPONENT_DIRS
-    C:/Users/julie/OneDrive/Desktop/esp-who/components
-)
 project(backseat-minder)

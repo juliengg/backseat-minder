@@ -11,6 +11,7 @@ from usb_telemetry_viewer import cellular_view, update_cellular_panel
 from usb_telemetry_viewer import SmsControl
 from usb_telemetry_viewer import UsbConnection, driver_view, DriverDisplay
 from usb_telemetry_viewer import main, PacketReader
+from usb_telemetry_viewer import main, device_forecast_line
 
 
 class DriverTelemetryTests(unittest.TestCase):
@@ -403,3 +404,13 @@ class StreamRecoveryTests(unittest.TestCase):
         self.assertEqual(connection.read_available(5.5), b"BSMH")
         self.assertEqual(connection.generation, 1)
         device.write.assert_not_called()
+class DeviceForecastTests(unittest.TestCase):
+    def test_uses_device_forecast_without_recomputing(self):
+        sample = {"alert_state":"active", "forecast_valid":True,
+                  "temperature_humidity_valid":True, "forecast_7min_f":117.25,
+                  "slope_f_per_min":-99}
+        self.assertEqual(device_forecast_line(sample,180,90),([180,600],[90,117.25]))
+        for key,value in (("forecast_valid",False),("alert_state","suppressed"),
+                          ("temperature_humidity_valid",False),("forecast_7min_f",float("nan"))):
+            changed=dict(sample);changed[key]=value
+            self.assertEqual(device_forecast_line(changed,180,90),([],[]))

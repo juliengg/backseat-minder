@@ -41,13 +41,15 @@ static void reset() {
     nowUs = 0; writes = 0; nextResponse = 0;
     rx.clear(); tx.clear(); logs.clear(); responses.clear();
     busy.store(false);
+    cancel_pending.store(false); cancel_requested.store(false); alarm_requested.store(false);
+    sms_handler.store(nullptr); last_cancel_sent=-1000000;
     incoming = cellular::ReceiveLineBuffer{};
     if (requests) vQueueDelete(requests);
     requests = nullptr;
     assert(cellular_link_init() == ESP_OK);
 }
 
-static void run() {
+static void run(bool cancelled=false) {
     cellular::Request request;
     char number[] = "+15551234567";
     char message[] = "Testing";
@@ -58,8 +60,9 @@ static void run() {
     assert(logs.find("BUSY") != std::string::npos);
     assert(xQueueReceive(requests, &request, 0) == pdTRUE);
     transact(request);
-    busy.store(false); // Same completion action as the worker task.
-    assert(tx == "SEND_SMS|+15551234567|Testing\n" && writes == 1);
+    busy.store(false);
+ // Same completion action as the worker task.
+    assert(tx == std::string("SEND_SMS|+15551234567|Testing\n") + (cancelled ? "ALERT_STOP\n" : "") && writes == (cancelled?2u:1u));
 }
 
 static void run_horn() {
@@ -72,6 +75,7 @@ static void run_horn() {
     assert(request.action == cellular::Action::Horn);
     transact(request);
     busy.store(false);
+
     assert(tx == "HORN_CHIRP\n" && writes == 1 && !cellular_link_busy());
 }
 
@@ -207,5 +211,20 @@ int main() {
     for (int i = 0; i < 8; ++i)
         cellular_diagnostics_received("+15551234567", std::string(480, '"').c_str());
     assert(cellular_diagnostics_json(received_json, sizeof(received_json)) > 0);
+
+    reset();
+    cellular::Request voice; voice.action=cellular::Action::Call; strcpy(voice.sms.number,"933");
+    responses={{20000,"CALL_ACCEPTED\n"},{40000,"CALL_RESULT|OK\n"}};
+    transact(voice);assert(tx=="CALL|933\n"&&nowUs==40000);
+    reset();
+    busy.store(true);assert(cellular_link_start_alarm()==ESP_OK);
+    poll_incoming(0);assert(tx=="HORN_REPEAT\n"); // Independent of modem transaction slot.
+    cellular_link_cancel_alert();poll_incoming(0);assert(tx.find("ALERT_STOP\n")!=std::string::npos);
+    assert(cellular_link_cancel_pending());rx="ALERT_STOPPED\n";poll_incoming(0);assert(!cellular_link_cancel_pending());
+    reset();
+    cellular_link_set_sms_handler([](const char *,const char *m){if(!strcmp(m,"StOp"))cellular_link_cancel_alert();});
+    responses={{20000,"ACCEPTED\nRECEIVED_SMS|+15551234567|53744F70\n"},
+               {40000,"ALERT_STOPPED\nRESULT|OK\n"}};
+    run(true);assert(tx.find("ALERT_STOP\n")!=std::string::npos&&!cellular_link_cancel_pending());
     puts("PASS: primary async queue, BUSY, UART responses and timeout/no-retry policy");
 }

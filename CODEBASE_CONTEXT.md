@@ -4,7 +4,9 @@
 
 This repository contains ESP-IDF firmware for an **ESP32-S3 camera-based back-seat occupancy reminder prototype**. The indicator LED reflects the combined face, mmWave and thermal presence signals.
 
-The project also provides an on-device captive-portal setup flow for collecting and persisting contact-related settings. The Python telemetry dashboard's **Send SMS** button requests a test SMS through the primary's native USB connection and the secondary ESP32 in `cell/`. Real sending defaults off for bring-up. There are no automatic sensor-triggered SMS alerts, calls or emergency-services integrations.
+The project also provides an on-device captive-portal setup flow for persisting driver and emergency contacts. The primary runs the timed sensor/beacon alert protocol and temperature forecast; the secondary handles SMS, recorded calls and CAN horn commands. See [ALERT_WORKFLOW.md](ALERT_WORKFLOW.md) for triggers, cancellation and hardware limits.
+
+The Python dashboard accepts native USB telemetry or encrypted BLE telemetry with `--bluetooth`. BLE carries sensor/status packets, camera images and thermal frames while the primary is awake, and reconnects after its existing sleep cycle. See [BLUETOOTH_TELEMETRY.md](BLUETOOTH_TELEMETRY.md) for installation, pairing and bandwidth limits.
 
 ## Platform and Build
 
@@ -69,7 +71,7 @@ These presence signals drive the LED and USB telemetry; they do not automaticall
 ### Driver presence and deep sleep
 
 `main/beacon_tracker.cpp` tracks the supplied iBeacon card at the fixed BLE address
-`78:9f:38:08:0b:e5`. It follows the supplied passive-scanning example: interval
+`78:9f:38:0f:f4:43`. It follows the supplied passive-scanning example: interval
 `0x50` (50 ms), window `0x30` (30 ms), duplicate filtering disabled, a six-sample
 upper median, and at least three fresh advertisements before qualifying NEAR.
 Median RSSI at or above -75 dBm means NEAR; below -80 dBm means AWAY. The band

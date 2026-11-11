@@ -19,3 +19,5 @@ cell/.pio/
 .venv-cell/
 tests/.build/
 __pycache__/
+
+secondary_firmware/.pio/

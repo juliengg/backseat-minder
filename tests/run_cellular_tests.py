@@ -41,10 +41,19 @@ def main():
             name, value = line.split('=', 1)
             camera_defines.append(f'#define {name} {value}\n')
     (config_dir / 'sdkconfig.h').write_text(''.join(camera_defines))
-    for real_sms in (0, 1):
-        executable = output / f'cellular_{real_sms}{".exe" if os.name == "nt" else ""}'
+    # Compile the real main-loop wiring against SDK interface stubs as well.
+    subprocess.run(compiler + ['-std=c++17','-Wall','-Wextra','-Werror','-c',
+        '-Itests/stubs','-Ishared','-Imain','main/app_main.cpp','-o',str(output/'app_main.o')],cwd=ROOT,env=env,check=True)
+    for name in ('alert_workflow', 'alert_runtime'):
+        executable = output / f'{name}{".exe" if os.name == "nt" else ""}'
+        subprocess.run(compiler + ['-std=c++17','-Wall','-Wextra','-Werror',
+            '-Itests/stubs','-Ishared','-Imain',f'tests/{name}_test.cpp','-o',str(executable)],
+            cwd=ROOT,env=env,check=True)
+        subprocess.run([str(executable)],cwd=ROOT,check=True)
+    for real_sms, voice in ((0, 0), (0, 1), (1, 1)):
+        executable = output / f'cellular_{real_sms}_{voice}{".exe" if os.name == "nt" else ""}'
         command = compiler + ['-std=c++17', '-Wall', '-Wextra', '-Werror', '-O0',
-            f'-DBSM_SEND_REAL_SMS={real_sms}', '-Itests/stubs', '-Ishared', '-Imain',
+            f'-DBSM_SEND_REAL_SMS={real_sms}', f'-DBSM_ENABLE_VOICE_CALLS={voice}', '-Itests/stubs', '-Ishared', '-Imain',
             '-Isecondary_firmware/include', 'tests/cellular_host_test.cpp', 'main/boot_button.cpp',
             '-o', str(executable)]
         subprocess.run(command, cwd=ROOT, env=env, check=True)

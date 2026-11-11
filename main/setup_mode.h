@@ -10,3 +10,7 @@ void enter_setup_mode();       // Blocks until user confirms in portal
 bool setup_mode_get_phone_number(char *buffer, size_t capacity);
 // Reads the saved name; false if missing, empty, or the buffer is too small.
 bool setup_mode_get_name(char *buffer, size_t capacity);
+
+// Normalized saved recipient: index 0 driver; indices 1..3 emergency contacts.
+bool setup_mode_get_contact(unsigned index, char *buffer, size_t capacity);
+bool setup_mode_emergency_alerts_enabled();

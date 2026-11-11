@@ -31,3 +31,10 @@ constexpr uint32_t MODEM_BOOT_WAIT_MS = 8000;
 #define BSM_SEND_REAL_SMS 0
 #endif
 constexpr bool SEND_REAL_SMS = BSM_SEND_REAL_SMS != 0;
+
+// Independent of SMS dry-run mode; enable explicitly for voice testing.
+#ifndef BSM_ENABLE_VOICE_CALLS
+#define BSM_ENABLE_VOICE_CALLS 0
+#endif
+constexpr bool ENABLE_VOICE_CALLS = BSM_ENABLE_VOICE_CALLS != 0;
+constexpr uint32_t VOICE_ANSWER_TIMEOUT_MS = 60000;

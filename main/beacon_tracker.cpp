@@ -1,4 +1,6 @@
 #include "beacon_tracker.h"
+#include "ble_telemetry.h"
+#include "ble_telemetry_gap.h"
 
 #include <cstring>
 #include "esp_bt.h"
@@ -62,6 +64,7 @@ void gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
     portENTER_CRITICAL(&s_lock);
     const bool stopping = s_stopping;
     portEXIT_CRITICAL(&s_lock);
+    ble_telemetry_gap_event(event,param);
     if (stopping) return;
 
     switch (event) {
@@ -129,6 +132,7 @@ bool beacon_tracker_stop()
     s_stopping = true;
     portEXIT_CRITICAL(&s_lock);
     mark_unavailable();
+    if(!ble_telemetry_stop()) return false;
     bool ok = true;
     if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED)
         ok = check(esp_bluedroid_disable(), "Disable Bluedroid") && ok;
@@ -161,6 +165,7 @@ bool beacon_tracker_init(bool previously_near)
         beacon_tracker_stop();
         return false;
     }
+    if(!ble_telemetry_start()) ESP_LOGW(TAG,"Optional BLE telemetry unavailable; beacon scanning continues");
     static esp_ble_scan_params_t params = {};
     params.scan_type = BLE_SCAN_TYPE_PASSIVE;
     params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
@@ -172,7 +177,7 @@ bool beacon_tracker_init(bool previously_near)
         beacon_tracker_stop();
         return false;
     }
-    ESP_LOGI(TAG, "Scanning for driver fob 78:9f:38:08:0b:e5");
+    ESP_LOGI(TAG, "Scanning for driver fob 78:9f:38:0f:f4:43");
     return true;
 }
 

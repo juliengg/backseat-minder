@@ -1,4 +1,5 @@
 #include "usb_telemetry.h"
+#include "ble_telemetry.h"
 #include "driver_power.h"
 #include "cellular_diagnostics.h"
 #include "cellular_link.h"
@@ -47,24 +48,24 @@ bool send_packet(const char magic[4], const uint8_t *payload, size_t payload_len
         static_cast<uint8_t>((payload_length >> 8) & 0xFF),
         static_cast<uint8_t>(payload_length & 0xFF),
     };
-    return write_bytes(header, sizeof(header)) && write_bytes(payload, payload_length);
+    const bool wireless=ble_telemetry_send_packet(magic,payload,payload_length);
+    const bool wired=s_ready && write_bytes(header,sizeof(header)) && write_bytes(payload,payload_length);
+    return wired || wireless;
 }
 
 } // namespace
 
 void usb_telemetry_init()
 {
+    ble_telemetry_init();
+    s_write_mutex=xSemaphoreCreateMutex();
+    if(!s_write_mutex) { ESP_LOGW(TAG,"Telemetry mutex allocation failed");return; }
     usb_serial_jtag_driver_config_t config = {};
     config.tx_buffer_size = 512;
     config.rx_buffer_size = 128;
 
     const esp_err_t err = usb_serial_jtag_driver_install(&config);
     if (err == ESP_OK) {
-        s_write_mutex = xSemaphoreCreateMutex();
-        if (!s_write_mutex) {
-            ESP_LOGW(TAG, "Native USB telemetry mutex could not be created");
-            return;
-        }
         s_ready = true;
         ESP_LOGI(TAG, "Native USB telemetry is ready");
     } else {
@@ -75,10 +76,9 @@ void usb_telemetry_init()
 
 void usb_telemetry_poll_commands()
 {
-    if (!s_ready) return;
     char bytes[128];
-    const int count = usb_serial_jtag_read_bytes(bytes, sizeof(bytes), 0);
-    bool requested = false;
+    const int count = s_ready ? usb_serial_jtag_read_bytes(bytes,sizeof(bytes),0) : 0;
+    bool requested = ble_telemetry_take_sms_request();
     for (int i = 0; i < count; ++i) {
         if (s_command.push(bytes[i]) == cellular::FrameEvent::Ready) {
             if (strcmp(s_command.data(), "SEND_SMS") == 0) {
@@ -105,7 +105,18 @@ bool usb_telemetry_host_connected()
     // The USB Serial/JTAG connection monitor is not reliable on every board
     // routing of the native USB pins. A write with a short timeout is the
     // authoritative connectivity test, so do not suppress output here.
-    return s_ready;
+    return s_write_mutex && (s_ready || ble_telemetry_connected());
+}
+
+namespace {
+const char *alert_state="armed";
+uint64_t alert_elapsed=0;
+bool alert_forecast_valid=false;
+float alert_slope=0, alert_forecast=0;
+}
+void usb_telemetry_set_alert(const char *state,uint64_t elapsed_ms,bool valid,float slope,float forecast) {
+    alert_state=state; alert_elapsed=elapsed_ms; alert_forecast_valid=valid;
+    alert_slope=valid?slope:0; alert_forecast=valid?forecast:0;
 }
 
 void usb_telemetry_send(float temperature_f, float humidity_percent,
@@ -120,7 +131,7 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
 
     // Shared scratch storage is protected by s_write_mutex for the entire send.
     // Keep these buffers off the caller's stack (normally the main task).
-    static char message[512];
+    static char message[1024];
     const int length = snprintf(
         message, sizeof(message),
         "{\"uptime_ms\":%lld,\"face_detected\":%s,"
@@ -131,7 +142,8 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
         "\"driver_checking\":%s,\"power_state\":\"active\","
         "\"beacon_rssi_dbm\":%d,\"beacon_rssi_valid\":%s,"
         "\"temperature_humidity_valid\":%s,\"temperature_f\":%.1f,"
-        "\"humidity_percent\":%.1f}\n",
+        "\"humidity_percent\":%.1f,\"alert_state\":\"%s\",\"alert_elapsed_ms\":%llu,"
+        "\"forecast_valid\":%s,\"slope_f_per_min\":%.5f,\"forecast_7min_f\":%.2f}\n",
         esp_timer_get_time() / 1000,
         face_detected ? "true" : "false",
         mmwave_presence_detected ? "true" : "false",
@@ -142,7 +154,9 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
         driver.checking ? "true" : "false",
         driver.rssi_dbm, driver.rssi_valid ? "true" : "false",
         temperature_humidity_valid ? "true" : "false",
-        temperature_f, humidity_percent);
+        temperature_f, humidity_percent, alert_state,
+        static_cast<unsigned long long>(alert_elapsed),
+        alert_forecast_valid?"true":"false",alert_slope,alert_forecast);
 
     if (length > 0 && length < static_cast<int>(sizeof(message))) {
         send_packet("BSMT", reinterpret_cast<const uint8_t *>(message),
@@ -161,7 +175,7 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
 
 void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPowerState power)
 {
-    if (!s_ready || xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
+    if (!s_write_mutex || (!s_ready && !ble_telemetry_connected()) || xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
     char message[320];
     const int length = snprintf(message, sizeof(message),
         "{\"uptime_ms\":%lld,\"driver_present\":%s,\"beacon_available\":%s,"

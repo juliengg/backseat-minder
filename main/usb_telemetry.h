@@ -44,3 +44,7 @@ bool usb_telemetry_send_heat_trace_bounds(bool detected, uint8_t x, uint8_t y,
 
 // Returns true only while a native USB host is connected.
 bool usb_telemetry_host_connected();
+
+// Set by the main task; dashboard displays the ESP32's calculation unchanged.
+void usb_telemetry_set_alert(const char *state, uint64_t elapsed_ms,
+                             bool forecast_valid, float slope, float forecast);

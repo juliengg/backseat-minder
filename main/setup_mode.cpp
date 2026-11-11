@@ -760,7 +760,7 @@ bool setup_mode_get_name(char *buffer, size_t capacity)
     return true;
 }
 
-bool setup_mode_get_phone_number(char *buffer, size_t capacity)
+bool setup_mode_get_contact(unsigned index, char *buffer, size_t capacity)
 {
     if (!buffer || capacity == 0) return false;
     buffer[0] = '\0';
@@ -768,7 +768,9 @@ bool setup_mode_get_phone_number(char *buffer, size_t capacity)
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
     char saved[MAX_PHONE_LEN] = {};
     size_t length = sizeof(saved);
-    const esp_err_t result = nvs_get_str(handle, NVS_KEY_PHONE, saved, &length);
+    const char *keys[] = {NVS_KEY_PHONE, NVS_KEY_EC1, NVS_KEY_EC2, NVS_KEY_EC3};
+    if (index >= 4) { nvs_close(handle); return false; }
+    const esp_err_t result = nvs_get_str(handle, keys[index], saved, &length);
     nvs_close(handle);
     if (result != ESP_OK) return false;
 
@@ -781,6 +783,18 @@ bool setup_mode_get_phone_number(char *buffer, size_t capacity)
     if (!cellular::valid_number(normalized) || used + 1 > capacity) return false;
     memcpy(buffer, normalized, used + 1);
     return true;
+}
+
+bool setup_mode_get_phone_number(char *buffer, size_t capacity) {
+    return setup_mode_get_contact(0, buffer, capacity);
+}
+bool setup_mode_emergency_alerts_enabled() {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
+    uint8_t enabled = 0;
+    nvs_get_u8(handle, NVS_KEY_EMERG, &enabled);
+    nvs_close(handle);
+    return enabled == 1;
 }
 
 void setup_mode_init()
