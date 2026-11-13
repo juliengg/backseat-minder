@@ -8,9 +8,8 @@
 // development telemetry. Failure to connect USB never affects device behavior.
 void usb_telemetry_init();
 
-// Nonblocking, bounded command poll; also used during beacon-only wake probes.
-// SEND_SMS remains pending until consumed below, so a probe cannot lose or
-// execute an SMS request prematurely. Viewer traffic never inhibits sleep.
+// Nonblocking, bounded command poll during continuous monitoring.
+// SEND_SMS remains pending until consumed below.
 // Call command functions from the main task only.
 void usb_telemetry_poll_commands();
 bool usb_telemetry_sms_pending();
@@ -26,7 +25,7 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool mmwave_presence_detected, bool thermal_heat_detected,
                         bool human_presence_detected, const BeaconStatus &driver);
 
-// BSMP is also sent during BLE-only wake probes, before sensors are started.
+// BSMP reports driver status independently of the slower sensor samples.
 enum class TelemetryPowerState { Active, BeaconProbe, SleepPending };
 void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPowerState power);
 void usb_telemetry_flush();

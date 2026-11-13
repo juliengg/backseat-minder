@@ -447,6 +447,28 @@ const char *call(const char *number, void (*service)()) {
     // From this point a timeout may leave the modem in binary receive mode.
     transferUncertain = true;
     if (!waitReply(reply, sizeof(reply), ">", 10000)) return "AUDIO_TRANSFER_UNCERTAIN";
+    // Some modem configurations echo the binary upload. Consume that echo as
+    // bytes while transmitting so it cannot overflow RX or the AT text parser.
+    size_t echoed = 0;
+    bool echoStarted = false, uploadOk = false, uploadError = false;
+    cellular::BasicLineBuffer<128> uploadReply;
+    auto receiveUpload = [&]() {
+      while (modem.available()) {
+        const uint8_t byte = static_cast<uint8_t>(modem.read());
+        if (!echoStarted && echoed == 0 && byte == AUDIO_WAV[0]) echoStarted = true;
+        if (echoStarted && echoed < sizeof(AUDIO_WAV)) {
+          if (byte != AUDIO_WAV[echoed]) uploadError = true;
+          ++echoed;
+          continue;
+        }
+        modemInput(static_cast<char>(byte));
+        if (uploadReply.push(static_cast<char>(byte)) == cellular::FrameEvent::Ready) {
+          const char *line = uploadReply.data();
+          if (!strcmp(line, "OK")) uploadOk = true;
+          if (!strcmp(line, "ERROR") || !strncmp(line, "+CME ERROR:", 11)) uploadError = true;
+        }
+      }
+    };
     for (size_t offset = 0; offset < sizeof(AUDIO_WAV); offset += 256) {
       if (transactionExpired()) return "AUDIO_TRANSFER_UNCERTAIN";
       const size_t remaining = sizeof(AUDIO_WAV) - offset;
@@ -454,9 +476,20 @@ const char *call(const char *number, void (*service)()) {
       if (modem.write(AUDIO_WAV + offset, count) != count)
         return "AUDIO_TRANSFER_UNCERTAIN";
       modem.flush();
+      receiveUpload();
       serviceDelay(5);
+      receiveUpload();
     }
-    if (!waitReply(reply, sizeof(reply), "\r\nOK\r\n", 15000))
+    const uint32_t uploadFinished = millis();
+    while (!uploadOk && !uploadError && !transactionExpired() &&
+           millis() - uploadFinished < 15000) {
+      receiveUpload();
+      serviceDelay(2);
+    }
+    Serial.printf("WAV upload: %u bytes sent, %u echo bytes received, final OK=%d.\n",
+                  static_cast<unsigned>(sizeof(AUDIO_WAV)),
+                  static_cast<unsigned>(echoed), uploadOk);
+    if (!uploadOk || uploadError || (echoStarted && echoed != sizeof(AUDIO_WAV)))
       return "AUDIO_TRANSFER_UNCERTAIN";
     transferUncertain = false;
     audioReady = true;

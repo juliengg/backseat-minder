@@ -87,7 +87,7 @@ extern "C" void app_main()
     usb_telemetry_init();
     alert_runtime_init();
     const bool suppressed_boot = alert_runtime_suppressed();
-    const bool beacon_ready = beacon_tracker_init(driver_power_timer_wakeup() && !suppressed_boot);
+    const bool beacon_ready = beacon_tracker_init();
     if(suppressed_boot) {
         cellular_link_init();
         cellular_link_cancel_alert();
@@ -105,53 +105,7 @@ extern "C" void app_main()
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_GPIO, 0);
 
-    bool setup_requested_during_probe = false;
     bool setup_button_held = false;
-    if ((driver_power_timer_wakeup() || suppressed_boot) && beacon_ready) {
-        // Do not start the camera, AI, sensors or cellular worker just to check
-        // a still-near fob. A missing/weak fob exits into full monitoring.
-        const TickType_t probe_started = xTaskGetTickCount();
-        TickType_t last_probe_report = probe_started;
-        // Allow a slow advertising fob to supply three fresh samples without
-        // starting all sensors. A 5-second absence still ends the probe early.
-        while (xTaskGetTickCount() - probe_started <= pdMS_TO_TICKS(10000)) {
-            usb_telemetry_poll_commands();
-            if (usb_telemetry_sms_pending()) break; // Start the worker to service the request.
-            if (gpio_get_level(GPIO_NUM_0) == 0) {
-                boot_button_init(true); // Preserve a press arriving during a probe.
-                break;
-            }
-            if (setup_mode_button_pressed()) {
-                setup_requested_during_probe = true;
-                break;
-            }
-            if (xTaskGetTickCount() - last_probe_report >= pdMS_TO_TICKS(500)) {
-                usb_telemetry_send_driver_status(beacon_tracker_status(), TelemetryPowerState::BeaconProbe);
-                last_probe_report = xTaskGetTickCount();
-            }
-            if(suppressed_boot) {
-                const auto status=beacon_tracker_status();
-                if(status.available && !status.checking && status.driver_present) break;
-                driver_power_sleep_cancelled(cellular_link_busy());
-            } else driver_power_sleep_if_present(false);
-            const auto probe = beacon_tracker_status();
-            if (!probe.available && !probe.checking) break;
-            if (probe.available && !probe.checking && !probe.driver_present) {
-                usb_telemetry_send_driver_status(probe, TelemetryPowerState::Active);
-                break; // Confirmed AWAY: start monitoring immediately.
-            }
-            vTaskDelay(pdMS_TO_TICKS(20));
-        }
-    }
-    while(suppressed_boot && !setup_requested_during_probe) {
-        const auto status=beacon_tracker_status();
-        if(status.available && !status.checking && status.driver_present) break;
-        usb_telemetry_poll_commands();
-        if(usb_telemetry_sms_pending() || gpio_get_level(GPIO_NUM_0)==0) break;
-        if(setup_mode_button_pressed()) { setup_requested_during_probe=true; break; }
-        driver_power_sleep_cancelled(cellular_link_busy());
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
     const esp_err_t cellular_status = cellular_link_init();
     if (cellular_status != ESP_OK) {
         ESP_LOGW("app_main", "Cellular link unavailable: %s", esp_err_to_name(cellular_status));
@@ -178,8 +132,6 @@ extern "C" void app_main()
     TickType_t last_sensor_read = 0;
     TickType_t last_stack_report = xTaskGetTickCount();
     TickType_t last_driver_report = 0;
-    uint64_t suppression_probe_started = 0;
-    bool was_suppressed = false;
 
     while (true)
     {
@@ -214,8 +166,7 @@ extern "C" void app_main()
         }
 
         const bool setup_pressed = setup_mode_button_pressed();
-        if (setup_requested_during_probe || (setup_pressed && !setup_button_held)) {
-            setup_requested_during_probe = false;
+        if (setup_pressed && !setup_button_held) {
             if (beacon_tracker_driver_near()) {
                 // A nearby driver can configure the device while still detected.
                 // The cellular worker continues cancellation during setup.
@@ -281,20 +232,6 @@ extern "C" void app_main()
             last_stack_report = xTaskGetTickCount();
         }
 
-        // Finish a queued SMS/horn before removing power from the primary.
-        const bool actions_busy=cellular_link_busy();
-        if(alert_runtime_suppressed()) {
-            const uint64_t now_ms=static_cast<uint64_t>(esp_timer_get_time()/1000);
-            if(!was_suppressed) suppression_probe_started=now_ms;
-            was_suppressed=true;
-            // On return allow a bounded sensor check, then sleep/recheck if occupied.
-            const bool returning=driver.available && !driver.checking && driver.driver_present;
-            const bool sensor_check=returning && now_ms-suppression_probe_started<10000;
-            driver_power_sleep_cancelled(actions_busy || sensor_check);
-        } else {
-            was_suppressed=false;
-            driver_power_sleep_if_present(actions_busy || alert_runtime_active());
-        }
         vTaskDelay(pdMS_TO_TICKS(20)); // Keep USB commands and setup responsive.
     }
 }

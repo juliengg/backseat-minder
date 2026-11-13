@@ -62,16 +62,13 @@ not persistent logging: disconnected/overloaded viewers do not receive a backlog
 
 The service shares the existing Bluedroid host and single GAP callback with passive
 beacon scanning. It does not create a second controller or replace the beacon's
-callback. Before Wi-Fi setup or deep sleep, queued telemetry is discarded and
+callback. Before Wi-Fi setup, queued telemetry is discarded and
 sending is quiesced before the shared host is deinitialized.
 
-**A connected viewer does not keep the primary awake.** Existing driver-present
-and cancelled-incident sleep policies remain active. BLE disconnects during deep
-sleep and Wi-Fi setup; the viewer scans/reconnects automatically. Beacon-only wake
-probes produce beacon/power packets, not new temperature or camera samples. Full
-streams are produced only while the primary's monitoring/sensor tasks are active.
-Pairing/discovery may take multiple wake cycles. Keep the beacon/alert workflow
-in its intended state; do not create a real alert solely to test previews.
+The primary continuously monitors sensors and scans for the driver beacon with
+or without a connected viewer. Driver presence and cancelled incidents no longer
+put it into automatic deep sleep. Bluetooth reconnects after power cycles or
+Wi-Fi setup.
 
 Only one BLE viewer can connect at a time. USB and one BLE viewer can receive
 simultaneously. The cellular log contains sender/message data, so pair only the
@@ -91,7 +88,7 @@ old fragments to a new stream; the dashboard's parser is reset by stream generat
 Python tests use fake BLE clients/scanners and cover all packet types, small/large
 MTUs, lost/reordered fragments, aborted image recovery, reconnection, buffer limits,
 CLI mode selection and no retry on unknown command outcomes. Existing USB viewer,
-beacon and sleep-policy tests remain in use. Build with `tools/Build-Primary.ps1`.
+beacon and boot initialization tests remain in use. Build with `tools/Build-Primary.ps1`.
 The BLE firmware also needs `CONFIG_BT_GATTS_ENABLE=y`, set in this checkout.
 
 Official API references: [Espressif GATT example](https://github.com/espressif/esp-idf/tree/v5.5.4/examples/bluetooth/bluedroid/ble/gatt_server_service_table),

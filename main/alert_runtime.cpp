@@ -63,9 +63,10 @@ void alert_runtime_poll(bool presence,const BeaconStatus &driver) {
     if(before==alert::State::Armed && workflow.state==alert::State::Active) {
         persistence_ok=latch(true); cellular_diagnostics_record("ALERT_STARTED");
     }
-    if(before==alert::State::Active && workflow.state==alert::State::Suppressed) {
-        persistence_ok=latch(true); cellular_link_cancel_alert();
+    if(before==alert::State::Active && workflow.state!=alert::State::Active) {
+        persistence_ok=latch(workflow.state==alert::State::Suppressed); cellular_link_cancel_alert();
         cellular_diagnostics_record("ALERT_CANCELLED");
+        if(workflow.state==alert::State::Armed) refresh_config();
     }
     if(workflow.state==alert::State::Armed && before==alert::State::Suppressed) {
         persistence_ok=latch(false); refresh_config();

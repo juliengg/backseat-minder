@@ -6,6 +6,7 @@
 #include "cellular_protocol.h"
 
 namespace alert {
+constexpr float FORECAST_THRESHOLD_F = 104.0f;
 enum class State { Armed, Active, Suppressed };
 enum class Kind { Text, Call, Horn };
 struct Action { Kind kind; char number[32] = {}; char message[161] = {}; };
@@ -27,6 +28,7 @@ public:
     void cancel() {
         state = State::Suppressed; queued = 0; forecast_valid = false;
         call_pending = horn_pending = false; clear_since = 0;
+        return_tracking = false;
     }
     bool tick(uint64_t now, bool away, bool near, bool presence) {
         if (state == State::Suppressed) {
@@ -38,9 +40,20 @@ public:
         if (state == State::Armed && away && presence) {
             state = State::Active; started = now; stage = 1;
             count = queued = 0; call_attempted = call_pending = horn_pending = false;
-            forecast_valid = false; clear_since = 0; enqueue_texts(1,now);
+            forecast_valid = false; clear_since = 0; return_tracking = false; enqueue_texts(1,now);
         }
         if (state != State::Active) return false;
+        // Qualify continuous driver return independently of passenger presence.
+        if (!near) return_tracking = false;
+        else if (!return_tracking) { return_tracking = true; return_since = now; }
+        // Invalidate stale forecasts before either cancellation or call decisions.
+        if (forecast_valid && now - newest > 10000) forecast_valid = false;
+        if (return_tracking && now - return_since >= 15000 &&
+            forecast_valid && forecast_f < FORECAST_THRESHOLD_F) {
+            cancel();
+            state = State::Armed;
+            return true;
+        }
         if (near && !presence) {
             if (!clear_since) clear_since = now;
             else if (now - clear_since >= 5000) cancel();
@@ -48,9 +61,7 @@ public:
         if (state != State::Active) return false;
         if (elapsed(now) >= 180000 && stage < 2) { stage = 2; enqueue_texts(2,now); }
         if (elapsed(now) >= 300000 && stage < 3) { stage = 3; enqueue_texts(3,now); horn_pending = true; }
-        // A stale/failed sensor sample cannot authorize a forecast call.
-        if (forecast_valid && now - newest > 10000) forecast_valid = false;
-        if (elapsed(now) >= 180000 && forecast_valid && forecast_f > 104.0f &&
+        if (elapsed(now) >= 180000 && forecast_valid && forecast_f > FORECAST_THRESHOLD_F &&
             config.emergency_call_enabled && !call_attempted) call_pending = true;
         return false;
     }
@@ -97,6 +108,8 @@ private:
     size_t count=0, queued=0;
     Action queue[9] = {};
     uint64_t newest=0, clear_since=0;
+    uint64_t return_since=0;
+    bool return_tracking=false;
     bool call_pending=false, horn_pending=false;
     void enqueue_texts(unsigned level,uint64_t now) {
         for (unsigned i=0;i<(level==1?1u:4u);++i) {

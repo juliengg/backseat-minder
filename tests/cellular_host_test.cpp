@@ -20,7 +20,7 @@ static uint32_t now = 0;
 static int64_t buttonUs = 0;
 enum class ModemCase { Ready, Absent, NoSim, NoNetwork, NoPrompt, Reject, NoResult, Slow };
 static ModemCase modemCase = ModemCase::Ready;
-enum class VoiceCase { Good, NoAnswer, DialFail, PlaybackFail, UploadFail };
+enum class VoiceCase { Good, NoAnswer, DialFail, PlaybackFail, UploadFail, EchoUpload };
 static VoiceCase voiceCase = VoiceCase::Good;
 static size_t uploadRemaining = 0;
 static bool dialed = false;
@@ -55,6 +55,7 @@ void delay(uint32_t ms) {
 void test_on_write(HardwareSerial &serial, char c) {
     if (serial.id != 1) return;
     if (uploadRemaining) {
+        if (voiceCase == VoiceCase::EchoUpload) modem.rx += c;
         if (--uploadRemaining == 0) modem.rx += "\r\nOK\r\n";
         return;
     }
@@ -462,6 +463,11 @@ static void test_voice() {
         assert(modem.tx.find("AT+CHUP") != std::string::npos);
         assert(!sms_service::voiceConnected);
     }
+    reset(); voiceCase = VoiceCase::EchoUpload;
+    assert(!sms_service::call("+15551234567", primary_link::poll));
+    assert(sms_service::audioReady && !sms_service::transferUncertain);
+    assert(modem.tx.find("ATD+15551234567;") != std::string::npos);
+    assert(modem.tx.find("AT+CCMXPLAYWAV=\"") != std::string::npos);
     reset(); voiceCase = VoiceCase::UploadFail;
     assert(std::string(sms_service::call("+15551234567", primary_link::poll)) == "AUDIO_TRANSFER_UNCERTAIN");
     assert(modem.tx.find("ATD") == std::string::npos);

@@ -1,4 +1,4 @@
-"""Host tests of actual BLE tracker and deep-sleep policy: python tests/run_beacon_tests.py --zig."""
+"""Host tests of actual BLE tracker and continuous-monitoring boot initialization: python tests/run_beacon_tests.py --zig."""
 import argparse
 import os
 from pathlib import Path

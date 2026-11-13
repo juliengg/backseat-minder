@@ -13,7 +13,7 @@ stateDiagram-v2
     Armed --> Active: Confirmed driver AWAY and any presence detection
     Active --> Suppressed: Authorized STOP text
     Active --> Suppressed: Driver NEAR and all presence sensors clear for 5 seconds
-    Suppressed --> Suppressed: Deep sleep / beacon-only probes every 8 seconds
+    Active --> Armed: Driver NEAR for 15 seconds and fresh forecast below 104 F
     Suppressed --> Armed: Driver NEAR and sensors clear for 5 seconds
 ```
 
@@ -96,25 +96,31 @@ until cancellation. ON refreshes are sent periodically; timing is best effort
 while UART/CAN work is serviced. This sustained pattern needs vehicle validation;
 only the earlier short chirp was previously hardware-confirmed. CAN errors disable
 transmission and are not treated as proof that the vehicle horn changed state.
-An unconfirmed OFF/hang-up prevents a normal stop acknowledgement/sleep.
+An unconfirmed OFF/hang-up prevents a normal stop acknowledgement.
 
-Cancellation is latched in NVS. After acknowledged cancellation and completion
-of any in-flight transaction, the primary sleeps and wakes for beacon-only probes
-at the existing eight-second interval while the driver remains away. Sensors and
-camera are not initialized during those suppressed probes. When the driver is
-confirmed NEAR, sensors restart for a bounded ten-second check and must remain
-clear for five seconds to rearm. If still occupied, it sleeps and checks again.
-The same detection cannot restart the protocol immediately after STOP.
-An active incident inhibits normal driver-present sleep. Wi-Fi setup requests
-are deferred until the incident is inactive because setup blocks/reboots the
-primary loop. Existing manual SMS test and short horn controls remain available.
+During an active sequence, 15 continuous seconds of qualified NEAR beacon status
+cancels escalation when the fresh, valid seven-minute forecast is strictly below
+104 F, even while passenger presence remains detected. Unknown/checking or AWAY
+status resets the return timer. An invalid forecast or one older than ten seconds
+cannot authorize this cancellation. The existing NEAR plus passenger-clear rule
+also cancels after five seconds.
+
+Driver-return forecast cancellation stops queued escalation, requests horn/call
+cancellation, clears the NVS incident latch, and rearms immediately. While the
+driver remains NEAR, passenger presence cannot start an incident. A subsequent
+confirmed departure with passenger presence starts a fresh sequence.
+
+Explicit STOP/setup cancellation stays latched in NVS and requires driver NEAR
+with passenger detection clear for five seconds to rearm. Sensors, cameras and
+beacon scanning continue running through driver presence and cancellation. The
+primary no longer enters automatic deep sleep or beacon-only wake probes.
+Existing manual SMS test and short horn controls remain available.
 
 The incident latch also prevents a reset from generating a second EMS call:
 an interrupted incident restarts suppressed, not automatically resumed. Driver
 return/clear rearms it. A persistence failure disables the emergency call for that
 incident and records ALERT_STORAGE_ERROR. The modem/secondary must be power-cycled
-together after an uncertain binary audio transfer. The primary's sleep does not
-turn off the separately powered modem/secondary.
+together after an uncertain binary audio transfer. The modem/secondary remains separately powered.
 
 ## Build and verification
 
@@ -131,7 +137,7 @@ turn off the separately powered modem/secondary.
   `python -m unittest discover -s tools -p test_usb_telemetry_viewer.py`.
 
 Host tests exercise timing, beacon gating, regression, the threshold, one-call
-latching, saved-contact STOP authorization, sleep policy, primary UART actions,
+latching, saved-contact STOP authorization, continuous monitoring, primary UART actions,
 voice cancellation and CAN scheduling. The main loop is also compiled against
 SDK interface stubs. These checks do not replace a complete ESP-IDF build or
 hardware testing of sensing, sustained CAN behavior, voice audibility, sender

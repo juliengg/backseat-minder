@@ -1,6 +1,5 @@
 #include "usb_telemetry.h"
 #include "ble_telemetry.h"
-#include "driver_power.h"
 #include "cellular_diagnostics.h"
 #include "cellular_link.h"
 #include "cellular_protocol.h"
@@ -188,7 +187,7 @@ void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPower
             power == TelemetryPowerState::SleepPending ? "sleep_pending" : "active",
         driver.rssi_valid ? "true" : "false",
         driver.rssi_dbm, power == TelemetryPowerState::SleepPending ? "true" : "false",
-        static_cast<unsigned>(DRIVER_SLEEP_INTERVAL_MS));
+        0u);
     if (length > 0 && length < static_cast<int>(sizeof(message)))
         send_packet("BSMP", reinterpret_cast<const uint8_t *>(message), length);
     xSemaphoreGive(s_write_mutex);

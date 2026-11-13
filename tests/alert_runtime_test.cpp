@@ -47,6 +47,22 @@ int main(){
     alert_runtime_poll(true, away);
     assert(texts.size() == text_count && calls.size() == 1);
     linkBusy = false;
+    // Driver-return cancellation clears the persistence latch and dispatches
+    // stop even with passenger presence and a busy modem.
+    workflow=alert::Workflow{};
+    now=500000000; alert_runtime_poll(true,away);
+    for(int i=0;i<=10;++i){now=500000000+i*3000000LL;alert_runtime_sample(80,true);}
+    alert_runtime_poll(true,near);
+    now+=14999000;alert_runtime_sample(80,true);alert_runtime_poll(true,near);
+    assert(alert_runtime_active());
+    const auto return_cancels=cancels;
+    linkBusy=true; now+=1000;alert_runtime_poll(true,near);
+    assert(workflow.state==alert::State::Armed && savedLatch==0 && cancels==return_cancels+1);
+    linkBusy=false;
+    const auto return_texts=texts.size();
+    now+=1000;alert_runtime_poll(true,away);
+    assert(alert_runtime_active() && savedLatch==1 && texts.size()==return_texts+1);
+    alert_runtime_cancel();
     // Reboot of a latched incident suppresses rather than placing a second call.
     workflow=alert::Workflow{};alert_runtime_init();assert(alert_runtime_suppressed());
     assert(calls.size()==1);
