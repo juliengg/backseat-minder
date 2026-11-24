@@ -34,6 +34,7 @@ static uint32_t replyAt = 0;
 static bool injectHornDuringSms = false;
 static bool injectDuringHorn = false;
 static bool injectStopDuringHorn = false;
+static bool injectTestStop = false;
 static bool injectIncoming = false;
 static std::string incomingPdu;
 
@@ -42,6 +43,7 @@ int64_t esp_timer_get_time() { return buttonUs; }
 void delay(uint32_t ms) {
     now += ms;
     if(injectStopDuringHorn && now>=10) {primary.rx+="ALERT_STOP\n";injectStopDuringHorn=false;}
+    if (injectTestStop && now>=10) { primary.rx+="TEST_STOP\n"; injectTestStop=false; }
     if (injectDuringHorn && now >= 10) {
         primary.rx += "SEND_SMS|+15551234567|Second\nHORN_CHIRP\n";
         injectDuringHorn = false;
@@ -132,7 +134,7 @@ static void reset(ModemCase scenario = ModemCase::Ready) {
     busy = frameReceivedWhileBusy = false;
     now = 0;
     uploadRemaining = 0; dialed = cancelDial = cancelPlay = false; voiceCase = VoiceCase::Good;
-    injectHornDuringSms = injectDuringHorn = injectStopDuringHorn = false;
+    injectHornDuringSms = injectDuringHorn = injectStopDuringHorn = injectTestStop = false;
     injectIncoming = false;
     MCP2515::resetResult = MCP2515::bitrateResult = MCP2515::modeResult = MCP2515::ERROR_OK;
     MCP2515::frames.clear(); MCP2515::times.clear(); MCP2515::results.clear();
@@ -510,7 +512,45 @@ static void test_alarm_cancel() {
     }
 }
 
+static void test_dashboard_commands() {
+    reset();
+    request("TEST_HORN_CHIRP\n");
+    assert(primary.tx=="HORN_ACCEPTED\nHORN_RESULT|OK\n");
+    assert(MCP2515::frames.size()==5 && MCP2515::frames.back().data[0]==0x02);
+    now+=3000; primary_link::poll();
+    assert(MCP2515::frames.size()==5); // One burst only.
+
+    reset(); injectTestStop=true;
+    request("TEST_HORN_CHIRP\n");
+    assert(primary.tx=="HORN_ACCEPTED\nHORN_RESULT|ERROR|CANCELLED\n");
+    assert(MCP2515::times.back()<=12 && MCP2515::frames.back().data[0]==0x02);
+    request("HORN_REPEAT\nTEST_STOP\n");
+    const auto frames=MCP2515::frames.size();
+    now+=1000; primary_link::poll();
+    assert(MCP2515::frames.size()==frames+1 && MCP2515::frames.back().data[0]==0x02);
+
+    reset(); injectTestStop=true;
+    request("TEST_SEND_SMS|+15551234567|Dashboard test\n");
+    assert(primary.tx=="ACCEPTED\nRESULT|ERROR|CANCELLED\n");
+    assert(submissions==0 && now<1000);
+    request("SEND_SMS|+15551234567|Real alert\n");
+    assert(submissions==(SEND_REAL_SMS ? 1u : 0u));
+
+    reset();
+    request("TEST_CALL|933\n");
+    if (ENABLE_VOICE_CALLS) {
+        assert(primary.tx=="CALL_ACCEPTED\nCALL_RESULT|OK\n");
+        assert(modem.tx.find("ATD933;\r\n")!=std::string::npos);
+        assert(modem.tx.find("AT+CCMXPLAYWAV=\"")!=std::string::npos);
+        assert(modem.tx.find("AT+CHUP\r\n")!=std::string::npos);
+        assert(!dialed && !sms_service::voiceConnected);
+    } else {
+        assert(primary.tx=="CALL_ACCEPTED\nCALL_RESULT|ERROR|DRY_RUN\n");
+    }
+}
+
 int main() {
     test_protocol(); test_secondary(); test_button(); test_horn(); test_incoming(); test_voice(); test_alarm_cancel();
+    test_dashboard_commands();
     printf("PASS: voice workflow/cleanup/notifications and protocol, secondary SMS (%s), horn frames/timing/failures/shared BUSY, and BOOT debounce\n", SEND_REAL_SMS ? "real SMS simulation" : "dry run");
 }

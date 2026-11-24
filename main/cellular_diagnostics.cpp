@@ -82,7 +82,7 @@ void cellular_diagnostics_received(const char *sender, const char *message)
 }
 
 size_t cellular_diagnostics_json(char *buffer, size_t capacity,
-                                 bool sms_busy, uint32_t sms_requests)
+                                 const TelemetryTestStatus &tests)
 {
     // Keep the larger SMS snapshot off the main task's small stack.
     std::unique_ptr<Event[]> snapshot(new (std::nothrow) Event[8]);
@@ -92,11 +92,14 @@ size_t cellular_diagnostics_json(char *buffer, size_t capacity,
     for (size_t i = 0; i < size; ++i) snapshot[i] = events[(next + 8 - size + i) % 8];
     portEXIT_CRITICAL(&mutex);
     int written = snprintf(buffer, capacity,
-                           "{\"uptime_ms\":%lld,\"sms_control\":true,\"sms_busy\":%s,"
-                           "\"sms_requests\":%lu,\"events\":[",
+                           "{\"uptime_ms\":%lld,\"test_control\":true,\"sms_control\":true,"
+                           "\"sms_busy\":%s,\"alert_active\":%s,\"sms_requests\":%lu,"
+                           "\"call_requests\":%lu,\"horn_requests\":%lu,\"events\":[",
                            static_cast<long long>(esp_timer_get_time() / 1000),
-                           sms_busy ? "true" : "false",
-                           static_cast<unsigned long>(sms_requests));
+                           tests.busy ? "true" : "false", tests.alert_active ? "true" : "false",
+                           static_cast<unsigned long>(tests.sms_requests),
+                           static_cast<unsigned long>(tests.call_requests),
+                           static_cast<unsigned long>(tests.horn_requests));
     if (written < 0 || static_cast<size_t>(written) >= capacity) return 0;
     size_t used = written;
     for (size_t i = 0; i < size; ++i) {

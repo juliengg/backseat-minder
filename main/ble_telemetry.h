@@ -9,4 +9,4 @@ bool ble_telemetry_connected();
 // Includes pairing/subscription so an attached viewer can finish connecting.
 bool ble_telemetry_client_connected();
 bool ble_telemetry_send_packet(const char magic[4], const uint8_t *data, size_t size);
-bool ble_telemetry_take_sms_request();
+uint8_t ble_telemetry_take_test_requests();

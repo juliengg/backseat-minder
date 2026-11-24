@@ -64,8 +64,10 @@ class ConnectionTests(unittest.TestCase):
  def test_receive_and_control_use_encrypted_client(self):
   self.assertEqual(self.connection.read_available(0),packet());self.assertEqual(self.connection.generation,1)
   self.assertTrue(FakeClient.instances[0].kwargs['pair'])
-  self.assertEqual(self.device.write(b'SEND_SMS\n'),9)
-  self.assertEqual(FakeClient.instances[0].writes,[(RX_UUID,b'SEND_SMS\n',{'response':True})])
+  commands = (b'SEND_SMS\n', b'TEST_CALL\n', b'TEST_HORN\n')
+  for command in commands:
+   self.assertEqual(self.device.write(command), len(command))
+  self.assertEqual(FakeClient.instances[0].writes, [(RX_UUID, command, {'response': True}) for command in commands])
   with self.assertRaises(OSError):self.device.write(b'ATD933;\n')
  def test_unknown_command_outcome_never_retries(self):
   FakeClient.fail_write=True

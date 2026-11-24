@@ -16,6 +16,8 @@ const char *TAG = "beacon_tracker";
 const esp_bd_addr_t TARGET_MAC = {0x78, 0x9f, 0x38, 0x0f, 0xf4, 0x43};
 constexpr int RSSI_THRESHOLD = -75;
 constexpr int RSSI_HYSTERESIS = 5;
+constexpr int AWAY_THRESHOLD = RSSI_THRESHOLD - RSSI_HYSTERESIS;
+constexpr int AWAY_MIN_CONSECUTIVE_REPORTS = 3;
 constexpr int WIN_SIZE = 6;
 constexpr int MIN_SAMPLES = WIN_SIZE / 2;
 constexpr uint32_t BEACON_TIMEOUT_MS = 5000;
@@ -24,6 +26,7 @@ portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 int s_rssi[WIN_SIZE] = {};
 int s_count = 0;
 int s_index = 0;
+int s_weak_reports = 0;
 TickType_t s_last_seen = 0;
 TickType_t s_init_tick = 0;
 bool s_near = false;
@@ -47,6 +50,7 @@ void mark_unavailable()
     s_near = false;
     s_checking = false;
     s_count = s_index = 0;
+    s_weak_reports = 0;
     portEXIT_CRITICAL(&s_lock);
 }
 
@@ -96,12 +100,15 @@ void gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
             if (s_count && now - s_last_seen > pdMS_TO_TICKS(BEACON_TIMEOUT_MS)) {
                 // Never let RSSI retained from before a timeout qualify a return.
                 s_count = s_index = 0;
+                s_weak_reports = 0;
                 s_near = false;
                 s_checking = true;
             }
             s_rssi[s_index] = param->scan_rst.rssi;
             s_index = (s_index + 1) % WIN_SIZE;
             if (s_count < WIN_SIZE) ++s_count;
+            if (param->scan_rst.rssi >= AWAY_THRESHOLD) s_weak_reports = 0;
+            else if (s_weak_reports < AWAY_MIN_CONSECUTIVE_REPORTS) ++s_weak_reports;
             s_last_seen = now;
             portEXIT_CRITICAL(&s_lock);
         } else if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) {
@@ -195,7 +202,8 @@ BeaconStatus beacon_tracker_status()
     }
     else if (s_running && fresh && s_count >= MIN_SAMPLES) {
         if (average >= RSSI_THRESHOLD) s_near = true;
-        else if (average < RSSI_THRESHOLD - RSSI_HYSTERESIS) s_near = false;
+        else if (average < AWAY_THRESHOLD &&
+                 s_weak_reports >= AWAY_MIN_CONSECUTIVE_REPORTS) s_near = false;
         s_checking = false;
     }
     const BeaconStatus status = {s_running,

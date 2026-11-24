@@ -27,10 +27,22 @@ python tools/usb_telemetry_viewer.py --port COM4
 ```
 
 Both transports feed the same dashboard: sensor charts, detections, driver RSSI,
-visible and thermal images, cellular event history, and the Send SMS button.
+visible and thermal images, cellular event history, and three alert test buttons.
 Commands are submitted once and never replayed after a disconnect. Bluetooth
-images refresh more slowly than USB. Old image frames are replaced rather than
+camera previews now target up to 3 FPS, matching the camera producer. Actual
+Bluetooth speed depends on JPEG size, negotiated MTU and link congestion and may
+be lower than USB. Old image frames are replaced rather than
 building an unbounded backlog; sensor and driver packets take priority.
+
+- **Test SMS** sends a test message once to each saved driver or emergency contact number.
+- **Test Call** plays the alert recording to the same emergency-services contact used by escalation and hangs up when playback finishes. It uses the **Emergency alerts** setting in device setup.
+- **Test Horn** runs one short horn burst.
+
+The buttons require updated primary and secondary firmware. For live SMS and
+voice, use the `esp32_wroom_32_alerts` secondary environment. An active alert
+takes priority over a test. The primary drops unsent test texts and requests
+that the secondary stop the current test if an alert starts. An SMS already
+submitted to the modem needs to finish before it can accept the next action.
 
 Driver detection continues to scan for the fob while telemetry is connected.
 The viewer does not keep the board awake. During driver-triggered deep sleep,
@@ -47,8 +59,9 @@ Minder** from Windows Bluetooth settings and reconnect to pair again.
 Service: `8d7c0001-3e91-4d8b-9f2a-5b6c7d8e9010`.
 Notification TX characteristic: `8d7c0002-3e91-4d8b-9f2a-5b6c7d8e9010`.
 Command RX characteristic: `8d7c0003-3e91-4d8b-9f2a-5b6c7d8e9010`.
-Subscription and commands require link encryption. RX accepts exactly
-`SEND_SMS\n` as a single write with response, using the saved recipient/body.
+Subscription and commands require link encryption. RX accepts `SEND_SMS\n`,
+`TEST_CALL\n`, and `TEST_HORN\n`, each as a single write with response. The
+firmware provides all destinations and message content.
 
 Each notification is a 16-byte big-endian header (`4sIII`: packet magic,
 sequence, payload offset, total payload length), followed by payload bytes.

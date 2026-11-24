@@ -23,9 +23,9 @@
 #include "alert_runtime.h"
 #include "cellular_link.h"
 #include "cellular_diagnostics.h"
-#include "cellular_protocol.h"
-#include <cstdio>
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -81,6 +81,17 @@ void thermal_stream_start()
 
 extern "C" void app_main()
 {
+    const esp_err_t watchdog_status = esp_task_wdt_add(nullptr);
+    const bool watchdog_active = watchdog_status == ESP_OK;
+    if (watchdog_active) {
+        ESP_LOGI("app_main", "Main task watchdog armed");
+    } else {
+        ESP_LOGW("app_main", "Could not arm main task watchdog: %s", esp_err_to_name(watchdog_status));
+    }
+    if (esp_reset_reason() == ESP_RST_TASK_WDT) {
+        ESP_LOGW("app_main", "Restarted after a task watchdog timeout");
+    }
+
     const bool boot_wakeup = driver_power_init();
     setup_mode_init();  // handles NVS, button GPIO
     boot_button_init(boot_wakeup);
@@ -106,6 +117,9 @@ extern "C" void app_main()
     gpio_set_level(LED_GPIO, 0);
 
     bool setup_button_held = false;
+    // A button held across a reboot must be released before it can act again.
+    bool setup_button_armed = !setup_mode_button_pressed();
+    TickType_t setup_press_started = 0;
     const esp_err_t cellular_status = cellular_link_init();
     if (cellular_status != ESP_OK) {
         ESP_LOGW("app_main", "Cellular link unavailable: %s", esp_err_to_name(cellular_status));
@@ -139,40 +153,25 @@ extern "C" void app_main()
             cellular_link_send_horn();
         }
 
-        if (usb_telemetry_sms_requested()) {
-            char phone[32];
-            if (setup_mode_get_phone_number(phone, sizeof(phone))) {
-                char name[64];
-                char message[cellular::MAX_MESSAGE + 1];
-                if (!setup_mode_get_name(name, sizeof(name))) {
-                    ESP_LOGW("app_main", "Save a valid name in setup before sending the dashboard test");
-                    cellular_diagnostics_record("NO_NAME");
-                } else {
-                    const int length = snprintf(message, sizeof(message),
-                        "Backseat Minder test for %s. This checks delivery of passenger alerts. No action is needed.",
-                        name);
-                    if (length < 0 || static_cast<size_t>(length) >= sizeof(message) ||
-                        !cellular::valid_message(message)) {
-                        ESP_LOGW("app_main", "Saved name cannot be used in the dashboard test; update it in setup");
-                        cellular_diagnostics_record("INVALID_NAME");
-                    } else {
-                        cellular_link_send_sms(phone, message);
-                    }
-                }
-            } else {
-                ESP_LOGW("app_main", "No valid phone number configured; save a number in setup mode before sending SMS");
-                cellular_diagnostics_record("NO_PHONE");
-            }
-        }
-
         const bool setup_pressed = setup_mode_button_pressed();
-        if (setup_pressed && !setup_button_held) {
+        const TickType_t now = xTaskGetTickCount();
+        if (!setup_button_armed) {
+            setup_button_armed = !setup_pressed;
+        } else if (setup_button_held && now - setup_press_started >= pdMS_TO_TICKS(3000)) {
+            ESP_LOGI("app_main", "Setup button held for 3 seconds; rebooting");
+            esp_restart();
+        } else if (setup_pressed) {
+            if (!setup_button_held) {
+                setup_press_started = now;
+            }
+        } else if (setup_button_held) {
             if (beacon_tracker_driver_near()) {
                 // A nearby driver can configure the device while still detected.
                 // The cellular worker continues cancellation during setup.
-                alert_runtime_cancel();
+                alert_runtime_enter_setup();
                 ESP_LOGI("app_main", "Setup button pressed; driver nearby, alert cancelled for configuration");
                 enter_setup_mode();
+                alert_runtime_exit_setup(); // Setup startup failure returns without rebooting.
             } else {
                 ESP_LOGW("app_main", "Setup requires confirmed driver presence; bring the beacon nearby and press again");
             }
@@ -195,6 +194,7 @@ extern "C" void app_main()
                                              mmwave_presence_detected ||
                                              thermal_heat_detected;
         alert_runtime_poll(human_presence_detected,driver);
+        alert_runtime_poll_tests(usb_telemetry_take_test_requests());
         gpio_set_level(LED_GPIO, human_presence_detected ? 1 : 0);
 
         // AM2302/DHT22 measurements should be spaced by at least two seconds.
@@ -210,8 +210,7 @@ extern "C" void app_main()
             alert_runtime_sample(temperature_f,temperature_humidity_valid);
             alert_runtime_poll(human_presence_detected,driver);
             const auto &workflow=alert_runtime_workflow();
-            const char *alert_state=workflow.state==alert::State::Active?"active":
-                workflow.state==alert::State::Suppressed?"suppressed":"armed";
+            const char *alert_state=workflow.state_name();
             usb_telemetry_set_alert(alert_state,
                 workflow.elapsed(static_cast<uint64_t>(esp_timer_get_time()/1000)),
                 workflow.forecast_valid,workflow.slope_f_per_min,workflow.forecast_f);
@@ -220,7 +219,7 @@ extern "C" void app_main()
                                face_detected_since_telemetry,
                                mmwave_presence_detected,
                                thermal_heat_detected,
-                               human_presence_detected, driver);
+                               human_presence_detected, driver, alert_runtime_test_sms_pending());
 
             face_detected_since_telemetry = false;
         }
@@ -232,6 +231,8 @@ extern "C" void app_main()
             last_stack_report = xTaskGetTickCount();
         }
 
+        // Feed only after a complete pass through monitoring and telemetry.
+        if (watchdog_active) esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(20)); // Keep USB commands and setup responsive.
     }
 }

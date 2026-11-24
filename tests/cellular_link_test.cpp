@@ -8,6 +8,7 @@
 #include "../main/cellular_link.cpp"
 
 static int64_t nowUs = 0;
+static int64_t cancelTestAt = -1;
 static std::string rx, tx, logs;
 static std::vector<std::pair<int64_t, std::string>> responses;
 static size_t nextResponse = 0;
@@ -30,6 +31,10 @@ int uart_write_bytes(int, const void *data, size_t length) {
 }
 int uart_read_bytes(int, void *data, size_t capacity, TickType_t wait) {
     nowUs += wait * 1000;
+    if (cancelTestAt >= 0 && nowUs >= cancelTestAt) {
+        cellular_link_cancel_test();
+        cancelTestAt = -1;
+    }
     while (nextResponse < responses.size() && responses[nextResponse].first <= nowUs)
         rx += responses[nextResponse++].second;
     const size_t count = std::min(capacity, rx.size());
@@ -39,8 +44,10 @@ int uart_read_bytes(int, void *data, size_t capacity, TickType_t wait) {
 
 static void reset() {
     nowUs = 0; writes = 0; nextResponse = 0;
+    cancelTestAt = -1;
     rx.clear(); tx.clear(); logs.clear(); responses.clear();
     busy.store(false);
+    test_state.store(TestState::Idle);
     cancel_pending.store(false); cancel_requested.store(false); alarm_requested.store(false);
     sms_handler.store(nullptr); last_cancel_sent=-1000000;
     incoming = cellular::ReceiveLineBuffer{};
@@ -216,6 +223,29 @@ int main() {
     cellular::Request voice; voice.action=cellular::Action::Call; strcpy(voice.sms.number,"933");
     responses={{20000,"CALL_ACCEPTED\n"},{40000,"CALL_RESULT|OK\n"}};
     transact(voice);assert(tx=="CALL|933\n"&&nowUs==40000);
+
+    reset();
+    assert(cellular_link_send_call("933", true)==ESP_OK);
+    assert(xQueueReceive(requests, &voice, 0)==pdTRUE);
+    cancelTestAt=20000;
+    responses={{20000,"CALL_ACCEPTED\n"},{40000,"CALL_RESULT|ERROR|CANCELLED\n"}};
+    transact(voice);
+    assert(tx=="TEST_CALL|933\nTEST_STOP\n" && nowUs==40000 && !cellular_link_cancel_pending());
+
+    reset();
+    assert(cellular_link_send_horn(true)==ESP_OK);
+    cellular_link_cancel_test();
+    assert(xQueueReceive(requests, &voice, 0)==pdTRUE);
+    transact(voice);
+    assert(tx.empty()); // An alert started before the worker dispatched the test.
+
+    reset();
+    assert(cellular_link_send_call("933", true)==ESP_OK);
+    assert(xQueueReceive(requests, &voice, 0)==pdTRUE);
+    responses={{20000,"RESULT|ERROR|UNKNOWN_COMMAND\n"}};
+    transact(voice);
+    assert(nowUs==20000); // Earlier secondary firmware cannot tie up the link.
+
     reset();
     busy.store(true);assert(cellular_link_start_alarm()==ESP_OK);
     poll_incoming(0);assert(tx=="HORN_REPEAT\n"); // Independent of modem transaction slot.

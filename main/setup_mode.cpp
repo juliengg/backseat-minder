@@ -14,6 +14,8 @@
 #include "nvs.h"
 #include "lwip/ip4_addr.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -821,6 +823,33 @@ void enter_setup_mode()
 {
     ESP_LOGI(TAG, "Entering setup mode");
 
+    // Setup runs on the monitoring task and can wait for the user indefinitely.
+    const bool watchdog_active = esp_task_wdt_status(nullptr) == ESP_OK;
+    constexpr int64_t LED_BLINK_INTERVAL_US = 200000;
+    static bool led_state;
+    led_state = true;
+    gpio_set_level(LED_GPIO, led_state);
+
+    // Keep flashing while BLE shuts down and the setup portal starts.
+    esp_timer_handle_t led_timer = nullptr;
+    esp_timer_create_args_t led_timer_args{};
+    led_timer_args.callback = [](void *) {
+        led_state = !led_state;
+        gpio_set_level(LED_GPIO, led_state);
+    };
+    led_timer_args.name = "setup_led";
+    esp_err_t led_err = esp_timer_create(&led_timer_args, &led_timer);
+    if (led_err == ESP_OK) {
+        led_err = esp_timer_start_periodic(led_timer, LED_BLINK_INTERVAL_US);
+        if (led_err != ESP_OK) {
+            esp_timer_delete(led_timer);
+            led_timer = nullptr;
+        }
+    }
+    if (led_err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not start setup LED timer: %s", esp_err_to_name(led_err));
+    }
+
     setup_confirmed = false;
     // Setup blocks the monitoring loop and reboots on completion, so scanning
     // is unnecessary here. Deinitialize BLE before Wi-Fi needs internal RAM.
@@ -838,23 +867,43 @@ void enter_setup_mode()
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Setup startup failed: %s; returning to monitoring",
                  esp_err_to_name(err));
+        if (led_timer) {
+            esp_timer_stop(led_timer);
+            esp_timer_delete(led_timer);
+        }
+        gpio_set_level(LED_GPIO, 0);
         stop_ap();
         beacon_tracker_init();
         // One failed attempt per press; holding the button must not retry in
         // a tight loop and repeatedly allocate network resources.
-        while (gpio_get_level(BUTTON_GPIO) == 0)
+        while (gpio_get_level(BUTTON_GPIO) == 0) {
+            if (watchdog_active) esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(10));
+        }
         return;
     }
     positioning_preview_set_active(true);
     ESP_LOGI(TAG, "Setup ready: join '%s' and open http://%s", WIFI_SSID, SETUP_IP);
 
-    bool led_state = false;
+    // The entry hold must be released before a new press can exit setup.
+    bool exit_button_armed = false;
 
     while (!setup_confirmed)
     {
-        led_state = !led_state;
-        gpio_set_level(LED_GPIO, led_state);
+        if (!exit_button_armed) {
+            if (gpio_get_level(BUTTON_GPIO) != 0) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                exit_button_armed = gpio_get_level(BUTTON_GPIO) != 0;
+            }
+        } else if (setup_mode_button_pressed()) {
+            ESP_LOGI(TAG, "Setup button pressed again; exiting with saved settings");
+            break;
+        }
+        if (!led_timer) {
+            led_state = !led_state;
+            gpio_set_level(LED_GPIO, led_state);
+        }
+        if (watchdog_active) esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 
@@ -865,8 +914,10 @@ void enter_setup_mode()
     // in the same session. The event loop and netif stack stay up between
     // setup mode sessions; only the wifi driver and AP netif are torn down.
 
-    while (gpio_get_level(BUTTON_GPIO) == 0)
+    while (gpio_get_level(BUTTON_GPIO) == 0) {
+        if (watchdog_active) esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
 
     ESP_LOGI(TAG, "Exiting setup mode — rebooting");
     vTaskDelay(pdMS_TO_TICKS(500)); // flush logs before reboot

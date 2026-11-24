@@ -15,6 +15,7 @@ TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'
 RX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'
 FRAGMENT = struct.Struct('<2sHII')
 LIMITS = {b'BSMT':1024,b'BSMC':10000,b'BSMP':512,b'BSMF':200000,b'BSMH':8000,b'BSMD':5}
+TEST_COMMANDS = {"SMS": b"SEND_SMS\n", "Call": b"TEST_CALL\n", "Horn": b"TEST_HORN\n"}
 
 
 class FragmentAssembler:
@@ -184,7 +185,7 @@ class BluetoothSerial:
 
     def write(self, data):
         # Match USB's deliberately narrow control surface; no arbitrary recipient/AT.
-        if data != b'SEND_SMS\n':
+        if data not in TEST_COMMANDS.values():
             raise OSError('Unsupported Bluetooth command')
         loop, client = self._loop, self._client
         if not self.is_open or loop is None or client is None:

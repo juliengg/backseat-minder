@@ -6,15 +6,17 @@
 esp_err_t cellular_link_init();
 // Copies and queues one SMS without waiting for the secondary or modem.
 // ESP_ERR_INVALID_STATE means BUSY or link unavailable. Never retries an SMS.
-esp_err_t cellular_link_send_sms(const char *number, const char *message);
+esp_err_t cellular_link_send_sms(const char *number, const char *message, bool test = false);
 // Same UART worker and BUSY gate as SMS. No queueing behind an active action.
 // Horn results use HORN_* diagnostics and a separate bounded timeout; no retries.
-esp_err_t cellular_link_send_horn();
+esp_err_t cellular_link_send_horn(bool test = false);
 // Includes queued requests and the entire SMS/horn acknowledgement/result wait.
 bool cellular_link_busy();
+// Skip a queued test or interrupt the current test without sending ALERT_STOP.
+void cellular_link_cancel_test();
 
 // Voice and repeating horn use the existing asynchronous transaction worker.
-esp_err_t cellular_link_send_call(const char *number);
+esp_err_t cellular_link_send_call(const char *number, bool test = false);
 esp_err_t cellular_link_start_alarm();
 void cellular_link_cancel_alert(); // Urgent STOP bypasses an active transaction.
 bool cellular_link_cancel_pending();

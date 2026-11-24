@@ -206,7 +206,7 @@ GPIO 43/44 are UART0 TX/RX, used by the configured serial console and onboard US
 
 Connect a normally-open momentary button between **GPIO 38** (the header pin labeled IO38) and **GND**. Firmware enables the internal pull-up: released is HIGH, pressed is LOW. An optional 10 kOhm pull-up from GPIO 38 to 3.3 V can be fitted on the carrier. Do not connect the button input to 5 V.
 
-GPIO 38 is unused by this application's peripherals and is not a boot-strapping pin. Its board connection is microSD CMD, so the SD slot must remain empty. The existing 50 ms debounce and setup portal behavior are preserved. Hold the external button until setup starts; the onboard BOOT button remains for bootloader entry and no longer requests setup mode.
+GPIO 38 is unused by this application's peripherals and is not a boot-strapping pin. Its board connection is microSD CMD, so the SD slot must remain empty. The external button uses a 50 ms press debounce. During monitoring, press and release it to open setup with the driver beacon nearby, or hold it for three seconds to reboot. The onboard BOOT button remains available for bootloader entry.
 
 References: [Freenove board pinout](https://github.com/Freenove/Freenove_ESP32_S3_WROOM_Board/blob/main/ESP32S3_Pinout.png), [Freenove microSD pin assignments](https://docs.freenove.com/projects/fnk0086/en/latest/fnk0086/codes/tutorial/4_Read_and_Write_the_SDcard.html), and [Espressif GPIO restrictions](https://docs.espressif.com/projects/esp-idf/en/v5.1/esp32s3/api-reference/peripherals/gpio.html).
 

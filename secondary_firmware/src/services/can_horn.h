@@ -1,6 +1,7 @@
 #pragma once
 
 namespace can_horn {
+void cancel_chirp();
 // Failure leaves SMS available. No CAN data frames are sent by initialization.
 bool begin();
 // User-tested Q50 sequence; pumps UART during waits and always attempts OFF.

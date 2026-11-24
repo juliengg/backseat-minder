@@ -8,22 +8,17 @@
 // development telemetry. Failure to connect USB never affects device behavior.
 void usb_telemetry_init();
 
-// Nonblocking, bounded command poll during continuous monitoring.
-// SEND_SMS remains pending until consumed below.
-// Call command functions from the main task only.
-void usb_telemetry_poll_commands();
-bool usb_telemetry_sms_pending();
-
-// Poll and consume a pending SEND_SMS request; coalesce repeats within a read.
-// No command supplies a phone number or SMS body.
-bool usb_telemetry_sms_requested();
+// Main-task-only bounded poll of USB and Bluetooth test commands.
+// Returns a bitmask of telemetry_test commands, coalescing repeats within a poll.
+uint8_t usb_telemetry_take_test_requests();
 
 // Sends a BSMT JSON sensor sample and a BSMC cellular summary/history snapshot.
-// Includes dashboard SMS control availability, request count and busy state.
+// Includes dashboard test control availability, request counts and busy state.
 void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool temperature_humidity_valid, bool face_detected,
                         bool mmwave_presence_detected, bool thermal_heat_detected,
-                        bool human_presence_detected, const BeaconStatus &driver);
+                        bool human_presence_detected, const BeaconStatus &driver,
+                        bool test_sms_pending = false);
 
 // BSMP reports driver status independently of the slower sensor samples.
 enum class TelemetryPowerState { Active, BeaconProbe, SleepPending };

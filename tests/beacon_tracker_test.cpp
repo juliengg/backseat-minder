@@ -90,7 +90,8 @@ int main() {
     assert(beacon_tracker_rssi() == -75); // Partial window uses its actual count.
     samples(-100, 1);
     assert(beacon_tracker_rssi() == -81); // Average includes the low reading.
-    assert(!beacon_tracker_driver_near());
+    assert(beacon_tracker_driver_near()); // A single outlier cannot mark the driver away.
+    for (int poll = 0; poll < 5; ++poll) assert(beacon_tracker_driver_near());
     samples(-75);
     assert(beacon_tracker_driver_near());
     sample(-100);
@@ -98,6 +99,11 @@ int main() {
     assert(beacon_tracker_driver_near()); // One noisy sample stays in the dead band.
     sample(-100);
     assert(beacon_tracker_rssi() == -83);
+    assert(beacon_tracker_driver_near()); // Two weak reports still preserve NEAR.
+    sample(-75); // A recovered report breaks the weak streak.
+    sample(-100); sample(-100);
+    assert(beacon_tracker_driver_near());
+    sample(-100);
     assert(!beacon_tracker_driver_near());
     samples(-75);
     assert(beacon_tracker_rssi() == -75); // Old readings roll out of the window.

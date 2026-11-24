@@ -9,7 +9,7 @@ import serial
 
 from usb_telemetry_viewer import detection_statuses, update_detection_labels, regression_line
 from usb_telemetry_viewer import cellular_view, update_cellular_panel
-from usb_telemetry_viewer import SmsControl
+from usb_telemetry_viewer import AlertTestControls
 from usb_telemetry_viewer import UsbConnection, driver_view, DriverDisplay
 from usb_telemetry_viewer import main, PacketReader
 from usb_telemetry_viewer import main, device_forecast_line
@@ -134,34 +134,35 @@ class DriverTelemetryTests(unittest.TestCase):
         device.write.assert_not_called()
 
 
-class SmsControlTests(unittest.TestCase):
-    def snapshot(self, count=0, busy=False, uptime=9000):
-        return {"uptime_ms": uptime, "sms_control": True,
-                "sms_busy": busy, "sms_requests": count, "events": []}
+class AlertTestControlTests(unittest.TestCase):
+    def snapshot(self, count=0, busy=False, uptime=9000, active=False, calls=0, horns=0):
+        return {"uptime_ms": uptime, "test_control": True, "alert_active": active,
+                "sms_busy": busy, "sms_requests": count, "call_requests": calls,
+                "horn_requests": horns, "events": []}
 
     def control(self):
         device = Mock()
         device.write.return_value = len(b"SEND_SMS\n")
-        control = SmsControl(device)
+        control = AlertTestControls(device)
         control.observe(self.snapshot(), 0)
         return control, device
 
     def test_no_send_before_supported_fresh_telemetry(self):
-        control, device = SmsControl(Mock()), Mock()
+        control, device = AlertTestControls(Mock()), Mock()
         control.device = device
-        control.send(0)
-        control.observe({"uptime_ms": 0, "events": []}, 0)
-        control.send(1)
+        control.send("SMS", 0)
+        control.observe({"uptime_ms": 0, "sms_control": True, "events": []}, 0)
+        control.send("SMS", 1)
         device.write.assert_not_called()
         self.assertIn("Update primary", control.refresh(1)[1])
         control.observe(self.snapshot(), 2)
-        control.send(13)
+        control.send("SMS", 13)
         device.write.assert_not_called()
 
     def test_single_click_and_duplicate_clicks_until_ack(self):
         control, device = self.control()
-        control.send(1)
-        control.send(2)
+        control.send("SMS", 1)
+        control.send("Horn", 2)
         device.write.assert_called_once_with(b"SEND_SMS\n")
         # Buffered telemetry from before the click must not re-enable the button.
         control.observe(self.snapshot(), 3)
@@ -170,15 +171,15 @@ class SmsControlTests(unittest.TestCase):
         self.assertFalse(control.refresh(4)[0])
         control.observe(self.snapshot(count=1, busy=False), 5)
         self.assertTrue(control.refresh(5)[0])
-        control.send(6)
+        control.send("SMS", 6)
         self.assertEqual(device.write.call_count, 2)
 
     def test_busy_and_stale_disable_send(self):
         control, device = self.control()
         control.observe(self.snapshot(busy=True), 1)
-        control.send(2)
+        control.send("SMS", 2)
         control.observe(self.snapshot(busy=False), 3)
-        control.send(14)
+        control.send("SMS", 14)
         device.write.assert_not_called()
 
     def test_failed_or_partial_write_never_retries(self):
@@ -188,32 +189,55 @@ class SmsControlTests(unittest.TestCase):
                 device.write.side_effect = outcome
             else:
                 device.write.return_value = outcome
-            control.send(1)
+            control.send("SMS", 1)
             self.assertIn("write failed", control.refresh(2)[1])
-            control.send(2)
+            control.send("SMS", 2)
             control.observe(self.snapshot(), 12)
             self.assertIn("outcome unknown", control.refresh(12)[1])
             device.write.assert_called_once()
 
     def test_restart_and_no_confirmation_are_not_success(self):
         control, device = self.control()
-        control.send(1)
+        control.send("SMS", 1)
         control.observe(self.snapshot(uptime=0), 2)
         self.assertIn("restarted", control.refresh(2)[1])
-        control.send(3)
+        control.send("SMS", 3)
         control.observe(self.snapshot(uptime=1000), 14)
         self.assertIn("No command confirmation", control.refresh(14)[1])
         self.assertEqual(device.write.call_count, 2)
 
     def test_malformed_capability_does_not_enable_send(self):
-        for field, value in (("sms_control", 1), ("sms_busy", "false"),
-                             ("sms_requests", -1), ("sms_requests", True)):
+        for field, value in (("test_control", 1), ("sms_busy", "false"),
+                             ("sms_requests", -1), ("call_requests", True),
+                             ("horn_requests", None), ("alert_active", 0)):
             control, device = self.control()
             sample = self.snapshot()
             sample[field] = value
             control.observe(sample, 1)
-            control.send(2)
+            control.send("SMS", 2)
             device.write.assert_not_called()
+
+    def test_call_and_horn_use_their_own_confirmation_counters(self):
+        control, device = self.control()
+        device.write.return_value = len(b"TEST_CALL\n")
+        control.send("Call", 1)
+        control.observe(self.snapshot(count=1, horns=1), 2)
+        self.assertFalse(control.refresh(2)[0])
+        control.observe(self.snapshot(count=1, calls=1, horns=1), 3)
+        self.assertTrue(control.refresh(3)[0])
+        control.send("Horn", 4)
+        control.observe(self.snapshot(count=1, calls=1, horns=2), 5)
+        self.assertTrue(control.refresh(5)[0])
+        self.assertEqual([call.args[0] for call in device.write.call_args_list],
+                         [b"TEST_CALL\n", b"TEST_HORN\n"])
+
+    def test_all_actions_are_disabled_during_an_alert(self):
+        control, device = self.control()
+        control.observe(self.snapshot(active=True), 1)
+        for action in ("SMS", "Call", "Horn"):
+            control.send(action, 2)
+        device.write.assert_not_called()
+        self.assertIn("active alert", control.refresh(2)[1])
 
 
 class CellularStatusTests(unittest.TestCase):

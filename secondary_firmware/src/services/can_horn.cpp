@@ -59,6 +59,8 @@ bool stop_alarm() {
   if (!ok) { controller.reset(); ready = false; }
   return ok;
 }
+void cancel_chirp() { if (chirping) chirpCancelled = true; }
+
 void poll() {
   if (!alarm || !ready) return;
   const uint32_t now = millis();
@@ -108,6 +110,6 @@ const char *chirp(void (*service_primary)()) {
     ready = false;
     return offSent ? "CAN_SEND_FAILED" : "CAN_OFF_FAILED";
   }
-  return nullptr;
+  return chirpCancelled ? "CANCELLED" : nullptr;
 }
 } // namespace can_horn

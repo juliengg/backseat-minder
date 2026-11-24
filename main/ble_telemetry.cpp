@@ -1,6 +1,7 @@
 #include "ble_telemetry.h"
 #include "ble_telemetry_gap.h"
 #include "ble_telemetry_protocol.h"
+#include "telemetry_test_commands.h"
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
@@ -36,7 +37,8 @@ const esp_gatts_attr_db_t attributes[ATTR_COUNT]={
 };
 #undef ATTR
 std::atomic<bool> stopping{false},registered{false},registration_pending{false},adv_stop_done{true};
-std::atomic<bool> active{false},connected{false},subscribed{false},encrypted{false},congested{false},sms_request{false};
+std::atomic<bool> active{false},connected{false},subscribed{false},encrypted{false},congested{false};
+std::atomic<uint32_t> test_requests{0};
 std::atomic<uint32_t> generation{0};
 std::atomic<uint16_t> mtu{23};
 esp_gatt_if_t interface_id=ESP_GATT_IF_NONE;
@@ -47,6 +49,9 @@ TaskHandle_t sender_task=nullptr;
 struct Packet {uint8_t *bytes=nullptr;size_t size=0;};
 Packet pending[6];
 int64_t last_media[3]={};
+// Match the camera producer's 3 FPS target instead of discarding frames for 2 s.
+// Pending media slots keep only the newest frame if the link cannot keep up.
+constexpr int64_t CAMERA_INTERVAL_US=1000000/3;
 uint16_t next_id=0;
 uint8_t adv_done=0;
 bool service_started=false;
@@ -142,9 +147,13 @@ void gatts(esp_gatts_cb_event_t event,esp_gatt_if_t gatts_if,esp_ble_gatts_cb_pa
   if(stopping || p->write.is_prep || p->write.offset || !encrypted)break;
   if(p->write.handle==handles[TX_CCCD] && p->write.len==2){
    subscribed=p->write.value[0]==1 && p->write.value[1]==0;
-  } else if(p->write.handle==handles[RX_VALUE] &&
-    ((p->write.len==9 && !memcmp(p->write.value,"SEND_SMS\n",9)) ||
-     (p->write.len==10 && !memcmp(p->write.value,"SEND_SMS\r\n",10)))) sms_request=true;
+ } else if(p->write.handle==handles[RX_VALUE] && p->write.len &&
+           p->write.value[p->write.len-1]=='\n') {
+   size_t length=p->write.len-1;
+   if(length && p->write.value[length-1]=='\r') --length;
+   test_requests.fetch_or(telemetry_test::parse_command(
+       reinterpret_cast<const char *>(p->write.value),length));
+  }
   break;
  default:break;
  }
@@ -175,7 +184,7 @@ bool ble_telemetry_stop(){
  if(!active){discard_pending();return true;}
  // Keep callbacks alive while closing the link/unregistering the server. Host
  // disable with a live GATT connection can stall; never clear its state early.
- stopping=true;subscribed=false;sms_request=false;++generation;
+ stopping=true;subscribed=false;test_requests=0;++generation;
  if(io_mutex && xSemaphoreTake(io_mutex,pdMS_TO_TICKS(200))!=pdTRUE)return false;
  if(io_mutex)xSemaphoreGive(io_mutex);
  auto waitUntil=[](auto predicate)->bool {
@@ -219,14 +228,14 @@ void ble_telemetry_gap_event(esp_gap_ble_cb_event_t event,esp_ble_gap_cb_param_t
 }
 bool ble_telemetry_client_connected(){return active && !stopping && connected;}
 bool ble_telemetry_connected(){return active && !stopping && connected && encrypted && subscribed;}
-bool ble_telemetry_take_sms_request(){return sms_request.exchange(false);}
+uint8_t ble_telemetry_take_test_requests(){return test_requests.exchange(0);}
 bool ble_telemetry_send_packet(const char magic[4],const uint8_t *data,size_t size){
  if(!data || !ble_telemetry_connected() || size>200000 || !queue_mutex)return false;
  unsigned type=0;while(type<6 && memcmp(magic,types[type],4))++type;
  if(type==6)return false;
  if(type>=3){
   const unsigned index=type-3;const int64_t now=esp_timer_get_time();
-  const int64_t interval=type==5?2000000:1000000;
+  const int64_t interval=type==5?CAMERA_INTERVAL_US:1000000;
   if(now-last_media[index]<interval)return false;
   if(type==5 && (size>40000 || mtu<100))return false;
   last_media[index]=now;

@@ -3,6 +3,7 @@
 #include "cellular_diagnostics.h"
 #include "cellular_link.h"
 #include "cellular_protocol.h"
+#include "telemetry_test_commands.h"
 
 #include <stdio.h>
 
@@ -18,9 +19,8 @@ namespace {
 const char *TAG = "usb_telemetry";
 bool s_ready = false;
 SemaphoreHandle_t s_write_mutex = nullptr;
-uint32_t s_sms_requests = 0;
+TelemetryTestStatus s_tests;
 cellular::LineBuffer s_command;
-bool s_sms_pending = false;
 
 bool write_bytes(const uint8_t *data, size_t length)
 {
@@ -73,30 +73,20 @@ void usb_telemetry_init()
     }
 }
 
-void usb_telemetry_poll_commands()
+uint8_t usb_telemetry_take_test_requests()
 {
     char bytes[128];
     const int count = s_ready ? usb_serial_jtag_read_bytes(bytes,sizeof(bytes),0) : 0;
-    bool requested = ble_telemetry_take_sms_request();
+    uint8_t requests = ble_telemetry_take_test_requests();
     for (int i = 0; i < count; ++i) {
         if (s_command.push(bytes[i]) == cellular::FrameEvent::Ready) {
-            if (strcmp(s_command.data(), "SEND_SMS") == 0) {
-                requested = true;
-            }
+            requests |= telemetry_test::parse_command(s_command.data(), strlen(s_command.data()));
         }
     }
-    if (requested) ++s_sms_requests;
-    s_sms_pending |= requested;
-}
-
-bool usb_telemetry_sms_pending() { return s_sms_pending; }
-
-bool usb_telemetry_sms_requested()
-{
-    usb_telemetry_poll_commands();
-    const bool requested = s_sms_pending;
-    s_sms_pending = false;
-    return requested;
+    if (requests & telemetry_test::SMS) ++s_tests.sms_requests;
+    if (requests & telemetry_test::CALL) ++s_tests.call_requests;
+    if (requests & telemetry_test::HORN) ++s_tests.horn_requests;
+    return requests;
 }
 
 bool usb_telemetry_host_connected()
@@ -108,7 +98,7 @@ bool usb_telemetry_host_connected()
 }
 
 namespace {
-const char *alert_state="armed";
+const char *alert_state="suppressed";
 uint64_t alert_elapsed=0;
 bool alert_forecast_valid=false;
 float alert_slope=0, alert_forecast=0;
@@ -121,7 +111,8 @@ void usb_telemetry_set_alert(const char *state,uint64_t elapsed_ms,bool valid,fl
 void usb_telemetry_send(float temperature_f, float humidity_percent,
                         bool temperature_humidity_valid, bool face_detected,
                         bool mmwave_presence_detected, bool thermal_heat_detected,
-                        bool human_presence_detected, const BeaconStatus &driver)
+                        bool human_presence_detected, const BeaconStatus &driver,
+                        bool test_sms_pending)
 {
     if (!usb_telemetry_host_connected() ||
         xSemaphoreTake(s_write_mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
@@ -143,7 +134,7 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
         "\"temperature_humidity_valid\":%s,\"temperature_f\":%.1f,"
         "\"humidity_percent\":%.1f,\"alert_state\":\"%s\",\"alert_elapsed_ms\":%llu,"
         "\"forecast_valid\":%s,\"slope_f_per_min\":%.5f,\"forecast_7min_f\":%.2f}\n",
-        esp_timer_get_time() / 1000,
+        static_cast<long long>(esp_timer_get_time() / 1000),
         face_detected ? "true" : "false",
         mmwave_presence_detected ? "true" : "false",
         thermal_heat_detected ? "true" : "false",
@@ -164,8 +155,10 @@ void usb_telemetry_send(float temperature_f, float humidity_percent,
     // Repeat the recent history with each sensor sample so dropped USB packets
     // or opening the viewer after a result do not lose the summary.
     static char cellular[cellular::DIAGNOSTICS_JSON_CAPACITY];
+    s_tests.busy = test_sms_pending || cellular_link_busy();
+    s_tests.alert_active = strcmp(alert_state, "active") == 0;
     const size_t cellular_length = cellular_diagnostics_json(
-        cellular, sizeof(cellular), cellular_link_busy(), s_sms_requests);
+        cellular, sizeof(cellular), s_tests);
     if (cellular_length) {
         send_packet("BSMC", reinterpret_cast<const uint8_t *>(cellular), cellular_length);
     }
@@ -181,7 +174,7 @@ void usb_telemetry_send_driver_status(const BeaconStatus &driver, TelemetryPower
         "\"driver_checking\":%s,\"power_state\":\"%s\","
         "\"beacon_rssi_valid\":%s,\"beacon_rssi_dbm\":%d,"
         "\"deep_sleep_pending\":%s,\"beacon_recheck_ms\":%u}",
-        esp_timer_get_time() / 1000, driver.driver_present ? "true" : "false",
+        static_cast<long long>(esp_timer_get_time() / 1000), driver.driver_present ? "true" : "false",
         driver.available ? "true" : "false", driver.checking ? "true" : "false",
         power == TelemetryPowerState::BeaconProbe ? "beacon_probe" :
             power == TelemetryPowerState::SleepPending ? "sleep_pending" : "active",

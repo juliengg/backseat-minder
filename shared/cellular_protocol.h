@@ -22,6 +22,7 @@ constexpr uint32_t HORN_ACK_TIMEOUT_MS = 500;
 constexpr uint32_t HORN_RESULT_TIMEOUT_MS = 3000;
 
 constexpr const char *ALERT_STOP_COMMAND = "ALERT_STOP";
+constexpr const char *TEST_STOP_COMMAND = "TEST_STOP";
 constexpr uint32_t CALL_RESULT_TIMEOUT_MS = 170000;
 enum class Action { Sms, Horn, Call };
 
@@ -65,6 +66,7 @@ struct Sms {
 struct Request {
     Action action = Action::Sms;
     Sms sms = {};
+    bool test = false;
 };
 
 // Modifies the frame; returns a fixed, non-sensitive error reason or nullptr.

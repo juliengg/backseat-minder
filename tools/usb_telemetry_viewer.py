@@ -15,13 +15,15 @@ import sys
 import time
 
 import serial
-from bluetooth_transport import BluetoothConnection
+from bluetooth_transport import BluetoothConnection, TEST_COMMANDS
 
 
 CELLULAR_STATUSES = {
     "ALERT_STARTED": ("Presence alert started; driver away", "darkorange"),
-    "ALERT_CANCELLED": ("Alert cancelled; monitoring suppressed", "blue"),
-    "ALERT_REARMED": ("Driver returned and sensors clear; alert rearmed", "green"),
+    "ALERT_CANCELLED": ("Alert cancelled", "blue"),
+    "SETUP_ALERTS_PAUSED": ("Alerts paused for setup", "blue"),
+    "ALERT_REARMED": ("Driver confirmed; monitoring ready", "green"),
+    "ALERT_RESUMED": ("Active alert restored after reboot", "red"),
     "ALERT_STOPPED": ("Horn and voice cancellation acknowledged", "blue"),
     "ALERT_STOP_FAILED": ("Could not confirm cancellation; check device", "red"),
     "STOP_UNAUTHORIZED": ("STOP ignored: sender is not a saved contact", "darkorange"),
@@ -33,6 +35,16 @@ CELLULAR_STATUSES = {
     "CALL_OK": ("Recording finished; call remains connected", "green"),
     "CALL_DRY_RUN": ("Call disabled in this firmware; no number dialed", "darkorange"),
     "CALL_CANCELLED": ("Recorded call cancelled", "blue"),
+    "TEST_CALL_WAITING_ACK": ("Call test waiting for secondary", "darkorange"),
+    "TEST_CALL_ACCEPTED": ("Call test accepted", "blue"),
+    "TEST_CALL_OK": ("Test recording finished and call ended", "green"),
+    "TEST_CALL_DRY_RUN": ("Voice calls disabled in secondary firmware", "darkorange"),
+    "TEST_CALL_CANCELLED": ("Call test cancelled", "blue"),
+    "TEST_CALL_DISABLED": ("Enable Emergency alerts in device setup to test the call", "darkorange"),
+    "TEST_ALERT_ACTIVE": ("Test skipped while an alert is active", "darkorange"),
+    "TEST_BUSY": ("Test skipped while another action is in progress", "darkorange"),
+    "TEST_NO_CONTACTS": ("Save a driver or emergency contact number in setup", "red"),
+    "TEST_SECONDARY_UNSUPPORTED": ("Update secondary firmware to enable alert tests", "red"),
     "RX_READY": ("Incoming SMS reception ready", "green"),
     "RX_ERROR": ("Could not configure/read incoming SMS - check secondary logs", "red"),
     "RX_QUEUE_FULL": ("Incoming SMS queue full - some texts were not displayed", "red"),
@@ -40,6 +52,7 @@ CELLULAR_STATUSES = {
     "HORN_WAITING_ACK": ("Horn: waiting for secondary acknowledgement", "darkorange"),
     "HORN_ACCEPTED": ("Horn: secondary running chirp sequence", "blue"),
     "HORN_OK": ("Horn: CAN sequence submitted", "green"),
+    "HORN_CANCELLED": ("Horn burst stopped early", "blue"),
     "HORN_BUSY": ("Horn rejected: SMS or horn already in progress", "darkorange"),
     "HORN_CAN_UNAVAILABLE": ("Horn: MCP2515 unavailable - check secondary logs", "red"),
     "HORN_CAN_SEND_FAILED": ("Horn: CAN send failed - restart secondary after checking bus", "red"),
@@ -54,6 +67,7 @@ CELLULAR_STATUSES = {
     "ACCEPTED": ("Acknowledged - checking modem / sending", "blue"),
     "OK": ("SMS submitted successfully", "green"),
     "DRY_RUN": ("Dry run complete - no SMS sent", "darkorange"),
+    "CANCELLED": ("SMS test cancelled before submission", "blue"),
     "NO_PHONE": ("No valid phone number saved - open setup", "red"),
     "NO_NAME": ("No name saved - open setup", "red"),
     "INVALID_NAME": ("Name unsupported in SMS - update it in setup", "red"),
@@ -77,67 +91,78 @@ CELLULAR_STATUSES = {
 }
 
 
-class SmsControl:
-    """Send one deliberate USB request; wait for firmware receipt, never retry."""
+class AlertTestControls:
+    """Send one test request at a time and wait for firmware receipt."""
+
+    request_fields = {action: f"{action.lower()}_requests" for action in TEST_COMMANDS}
 
     def __init__(self, device):
         self.device = device
         self.last_received = None
-        self.requests = None
+        self.requests = {}
         self.uptime = None
         self.supported = False
         self.busy = False
+        self.alert_active = False
+        self.pending_action = None
         self.pending_since = None
-        self.message = "Waiting for SMS controls from device..."
+        self.message = "Waiting for test controls from device..."
 
     def observe(self, sample, now):
-        self.supported = (sample.get("sms_control") is True
+        counts = {action: sample.get(field) for action, field in self.request_fields.items()}
+        self.supported = (sample.get("test_control") is True
                           and type(sample.get("sms_busy")) is bool
-                          and type(sample.get("sms_requests")) is int
-                          and 0 <= sample["sms_requests"] <= 0xFFFFFFFF)
+                          and type(sample.get("alert_active")) is bool
+                          and all(type(count) is int and 0 <= count <= 0xFFFFFFFF
+                                  for count in counts.values()))
         self.last_received = now
         if not self.supported:
             return
         if self.pending_since is not None:
             if self.uptime is not None and sample["uptime_ms"] < self.uptime:
-                self.message = "Device restarted - SMS outcome unknown; check before retrying."
+                self.message = "Device restarted. Test outcome unknown."
                 self.pending_since = None
-            elif sample["sms_requests"] != self.requests:
-                self.message = "Request received by device - see cellular status below."
+            elif counts[self.pending_action] != self.requests[self.pending_action]:
+                self.message = f"{self.pending_action} test requested. See cellular status below."
                 self.pending_since = None
-        elif self.requests is None:
-            self.message = "Uses the name and phone number saved in device setup."
-        self.requests = sample["sms_requests"]
+        elif not self.requests:
+            self.message = "SMS uses saved driver and emergency contacts."
+        self.requests = counts
         self.uptime = sample["uptime_ms"]
         self.busy = sample["sms_busy"]
+        self.alert_active = sample["alert_active"]
 
     def refresh(self, now):
         if self.pending_since is not None and now - self.pending_since > 10:
             self.pending_since = None
-            self.message = "No command confirmation - SMS outcome unknown; check before retrying."
+            self.message = "No command confirmation. Test outcome unknown."
         if self.last_received is None or now - self.last_received > 10:
             return False, "Waiting for fresh cellular telemetry..."
         if not self.supported:
-            return False, "Update primary firmware to enable dashboard SMS."
+            return False, "Update primary firmware to enable alert tests."
+        if self.alert_active:
+            return False, "Tests are unavailable during an active alert."
         if self.pending_since is not None:
             return False, self.message
         if self.busy:
-            return False, "SMS or horn in progress - waiting for the result."
+            return False, "Waiting for the current action to finish..."
         return True, self.message
 
-    def send(self, now):
+    def send(self, action, now):
         if not self.refresh(now)[0]:
             return
         # Latch before writing so repeated clicks cannot submit another request.
+        self.pending_action = action
         self.pending_since = now
-        self.message = "Command sent - waiting for device confirmation..."
+        self.message = f"{action} test sent. Waiting for device confirmation..."
         try:
-            command = b"SEND_SMS\n"
+            command = TEST_COMMANDS[action]
             if self.device.write(command) != len(command):
-                raise OSError("incomplete USB write")
+                raise OSError("incomplete command write")
         except (serial.SerialException, OSError):
             # A failed/partial write may still have reached the device. Do not retry.
-            self.message = ("Bluetooth" if getattr(self.device,"is_bluetooth",False) is True else "USB") + " write failed - SMS outcome unknown; check before retrying."
+            transport = "Bluetooth" if getattr(self.device, "is_bluetooth", False) is True else "USB"
+            self.message = f"{transport} write failed. {action} test outcome unknown."
 
 
 class UsbConnection:
@@ -491,23 +516,29 @@ def show_viewer(device) -> int:
 
     cellular_frame = tk.LabelFrame(values_frame, text="Cellular alerts")
     cellular_frame.pack(fill="both", expand=True, pady=(8, 0))
-    sms_control = SmsControl(device)
+    test_controls = AlertTestControls(device)
 
-    def refresh_sms_button():
-        enabled, message = sms_control.refresh(time.monotonic())
-        sms_button.configure(state="normal" if enabled else "disabled")
-        sms_hint.configure(text=message)
+    def refresh_test_buttons():
+        enabled, message = test_controls.refresh(time.monotonic())
+        for button in test_buttons:
+            button.configure(state="normal" if enabled else "disabled")
+        test_hint.configure(text=message)
 
-    def send_sms():
-        sms_control.send(time.monotonic())
-        refresh_sms_button()
+    def send_test(action):
+        test_controls.send(action, time.monotonic())
+        refresh_test_buttons()
 
-    sms_button = tk.Button(cellular_frame, text="Send SMS", command=send_sms,
-                           state="disabled")
-    sms_button.pack(anchor="w", padx=4, pady=4)
-    sms_hint = tk.Label(cellular_frame, text=sms_control.message,
-                        anchor="w", justify="left", wraplength=310, fg="gray")
-    sms_hint.pack(fill="x", padx=4)
+    test_row = tk.Frame(cellular_frame)
+    test_row.pack(fill="x", padx=4, pady=4)
+    test_buttons = []
+    for action in TEST_COMMANDS:
+        button = tk.Button(test_row, text=f"Test {action}", state="disabled",
+                           command=lambda action=action: send_test(action))
+        button.pack(side="left", padx=(0, 4))
+        test_buttons.append(button)
+    test_hint = tk.Label(cellular_frame, text=test_controls.message,
+                         anchor="w", justify="left", wraplength=310, fg="gray")
+    test_hint.pack(fill="x", padx=4)
     cellular_label = tk.Label(cellular_frame, text="Waiting for cellular telemetry...",
                               anchor="w", justify="left", wraplength=310, fg="gray")
     cellular_label.pack(fill="x", padx=4, pady=4)
@@ -589,7 +620,7 @@ def show_viewer(device) -> int:
         else:
             temperature_fit.set_data([],[])
         temperature_axis.set_title(
-            f"Alert: {state} | elapsed {float(sample.get('alert_elapsed_ms',0))/60000:.1f} min | "
+            f"Alert: {state.replace('_', ' ')} | elapsed {float(sample.get('alert_elapsed_ms',0))/60000:.1f} min | "
             + (f"ESP32 slope {sample.get('slope_f_per_min',0):.2f} F/min; +7 min {forecast:.1f} F"
                if forecast_ok and isinstance(forecast,(float,int)) else "ESP32 forecast unavailable"),fontsize=8)
         humidity_fit.set_data(*regression_line(elapsed, humidities))
@@ -612,7 +643,7 @@ def show_viewer(device) -> int:
         text, color = driver_display.view(time.monotonic())
         driver_label.configure(text=text, fg=color)
         if sample.get("deep_sleep_pending") is True or sample.get("power_state") == "beacon_probe":
-            sms_control.last_received = None
+            test_controls.last_received = None
             connection_label.configure(text=f"Sleep announced; {transport_name} will reconnect for beacon checks",
                                         fg="gray")
         else:
@@ -625,8 +656,8 @@ def show_viewer(device) -> int:
         data = connection.read_available(time.monotonic())
         if data is None:
             packet_reader.clear()
-            sms_control.last_received = None
-            refresh_sms_button()
+            test_controls.last_received = None
+            refresh_test_buttons()
             connection_label.configure(
                 text=((device.status if bluetooth else "USB disconnected (sleep or unplugged); reconnecting automatically.")
                           + "\nDriver flag shows the last report."), fg="gray")
@@ -654,7 +685,7 @@ def show_viewer(device) -> int:
                 try:
                     sample = json.loads(payload.decode("utf-8"))
                     cellular_view(sample)  # Validate even an unchanged snapshot.
-                    sms_control.observe(sample, time.monotonic())
+                    test_controls.observe(sample, time.monotonic())
                     if sample["events"] != cellular_rendered_events or cellular_stale:
                         update_cellular_panel(cellular_label, cellular_history, sample)
                         cellular_rendered_events = sample["events"]
@@ -726,7 +757,7 @@ def show_viewer(device) -> int:
                 and time.monotonic() - cellular_last_received > 10):
             cellular_label.configure(text="Cellular telemetry stale - showing last events", fg="gray")
             cellular_stale = True
-        refresh_sms_button()
+        refresh_test_buttons()
         root.after(100 if data is None else 10, poll_device)
 
     root.after(10, poll_device)

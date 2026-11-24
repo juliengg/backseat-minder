@@ -15,6 +15,7 @@ uint32_t transactionStarted = 0;
 uint32_t transactionLimit = cellular::MODEM_TIMEOUT_MS;
 bool calling = false, voiceConnected = false;
 bool cancelRequested = false, privateReply = false, reserved = false;
+bool abortableTestSms = false;
 bool voiceEnded = false, wavDone = false, wavError = false;
 bool audioReady = false, transferUncertain = false;
 uint32_t modemStarted = 0;
@@ -168,9 +169,11 @@ static bool transactionExpired() {
   return millis() - transactionStarted >= transactionLimit;
 }
 
+static bool testSmsCancelled() { return abortableTestSms && cancelRequested; }
+
 static void serviceDelay(uint32_t duration) {
   const uint32_t started = millis();
-  while (millis() - started < duration && !transactionExpired()) {
+  while (millis() - started < duration && !transactionExpired() && !testSmsCancelled()) {
     can_horn::poll();
     if (servicePrimary) servicePrimary();
     delay(2);
@@ -211,7 +214,7 @@ static bool waitReply(char *reply, size_t capacity, const char *expected,
   reply[0] = '\0';
   const uint32_t started = millis();
   while (millis() - started < timeoutMs && !transactionExpired()) {
-    if (calling && cancelRequested && !transferUncertain) return false;
+    if ((calling && cancelRequested && !transferUncertain) || testSmsCancelled()) return false;
     can_horn::poll();
     if (servicePrimary) servicePrimary(); // Reject another command promptly, including during CMGS.
     for (size_t n = 0; n < 64 && modem.available(); ++n) {
@@ -236,7 +239,7 @@ static bool waitReply(char *reply, size_t capacity, const char *expected,
 
 static bool command(const char *atCommand, char *reply, size_t capacity,
                     uint32_t timeoutMs = 3000) {
-  if (transactionExpired()) return false;
+  if (transactionExpired() || testSmsCancelled()) return false;
   drain();
   Serial.printf("\n>> %s\n", atCommand);
   modem.print(atCommand);
@@ -277,25 +280,28 @@ static bool finishBackgroundReceive(void (*service)()) {
   return rxState==RxState::Idle;
 }
 
-const char *send(const cellular::Sms &sms, void (*service)()) {
+const char *send(const cellular::Sms &sms, void (*service)(), bool test) {
   if (transmitting_busy()) return "BUSY";
   Reservation reservation;
   cancelRequested=false;
   if(!finishBackgroundReceive(service)) return cancelRequested?"CANCELLED":"BUSY";
   struct SendingGuard {
-    SendingGuard() { sending = true; receiveReady = false; setupStep = 0; retryAt = 0; }
-    ~SendingGuard() { sending = false; }
-  } guard;
+    SendingGuard(bool test) {
+      sending = true; receiveReady = false; setupStep = 0; retryAt = 0;
+      abortableTestSms = test;
+    }
+    ~SendingGuard() { sending = abortableTestSms = false; }
+  } guard(test);
   servicePrimary = service;
   transactionStarted = millis();
   transactionLimit = cellular::MODEM_TIMEOUT_MS;
   char reply[768];
   // The listener is live immediately, even during modem power-up.
-  while (millis() - modemStarted < MODEM_BOOT_WAIT_MS && !transactionExpired()) {
+  while (millis() - modemStarted < MODEM_BOOT_WAIT_MS && !transactionExpired() && !testSmsCancelled()) {
     serviceDelay(20);
   }
   bool ready = false;
-  for (uint8_t attempt = 1; attempt <= 10 && !transactionExpired(); ++attempt) {
+  for (uint8_t attempt = 1; attempt <= 10 && !transactionExpired() && !testSmsCancelled(); ++attempt) {
     if (command("AT", reply, sizeof(reply))) {
       ready = true;
       break;
@@ -303,19 +309,21 @@ const char *send(const cellular::Sms &sms, void (*service)()) {
     Serial.printf("No modem response (attempt %u/10).\n", attempt);
     serviceDelay(1000);
   }
-  if (!ready) return "MODEM_UNAVAILABLE";
+  if (!ready) return testSmsCancelled() ? "CANCELLED" : "MODEM_UNAVAILABLE";
   if (!command("ATE0", reply, sizeof(reply)) ||
-      !command("AT+CMEE=2", reply, sizeof(reply))) return "MODEM_SETUP";
+      !command("AT+CMEE=2", reply, sizeof(reply))) return testSmsCancelled() ? "CANCELLED" : "MODEM_SETUP";
   if (!command("AT+CPIN?", reply, sizeof(reply)) ||
-      !strstr(reply, "+CPIN: READY")) return "SIM_NOT_READY";
+      !strstr(reply, "+CPIN: READY")) return testSmsCancelled() ? "CANCELLED" : "SIM_NOT_READY";
   command("AT+CSQ", reply, sizeof(reply)); // Diagnostic, not a registration test.
   const bool circuitRegistered = command("AT+CREG?", reply, sizeof(reply)) &&
                                  registered(reply, "+CREG:");
   const bool epsRegistered = command("AT+CEREG?", reply, sizeof(reply)) &&
                              registered(reply, "+CEREG:");
+  if (testSmsCancelled()) return "CANCELLED";
   if (!circuitRegistered && !epsRegistered) return "NOT_REGISTERED";
   if (!command("AT+CMGF=1", reply, sizeof(reply)) ||
-      !command("AT+CSCS=\"GSM\"", reply, sizeof(reply))) return "SMS_SETUP";
+      !command("AT+CSCS=\"GSM\"", reply, sizeof(reply))) return testSmsCancelled() ? "CANCELLED" : "SMS_SETUP";
+  if (testSmsCancelled()) return "CANCELLED";
   if (transactionExpired()) return "MODEM_TIMEOUT";
 
   if (!SEND_REAL_SMS) {
@@ -330,15 +338,16 @@ const char *send(const cellular::Sms &sms, void (*service)()) {
   modem.printf("AT+CMGS=\"%s\"\r\n", sms.number);
   if (!waitReply(reply, sizeof(reply), ">", 5000)) {
     modem.write(0x1B); // Escape text entry if the prompt arrived late.
-    return "SMS_PROMPT";
+    return testSmsCancelled() ? "CANCELLED" : "SMS_PROMPT";
   }
-  if (transactionExpired()) {
+  if (transactionExpired() || testSmsCancelled()) {
     modem.write(0x1B);
-    return "MODEM_TIMEOUT";
+    return testSmsCancelled() ? "CANCELLED" : "MODEM_TIMEOUT";
   }
   Serial.printf("Submitting %u characters.\n", static_cast<unsigned>(strlen(sms.message)));
   modem.print(sms.message);
   modem.write(0x1A);
+  abortableTestSms = false; // Keep the AT channel reserved until the modem finishes CMGS.
   // One buffer retains both +CMGS and OK, even if they arrive in the same burst.
   if (!waitReply(reply, sizeof(reply), "+CMGS:", 65000, true)) {
     if (strstr(reply, "ERROR")) return "SMS_REJECTED";
@@ -411,7 +420,7 @@ static int voiceState(char *reply, size_t capacity) {
   return state;
 }
 
-const char *call(const char *number, void (*service)()) {
+const char *call(const char *number, void (*service)(), bool test) {
   if (!cellular::valid_call_number(number)) return "BAD_NUMBER";
   if (transferUncertain) return "AUDIO_TRANSFER_UNCERTAIN";
   if (transmitting_busy() || voiceConnected) return "BUSY";
@@ -545,7 +554,7 @@ const char *call(const char *number, void (*service)()) {
     delay(2);
   }
   if (voiceEnded) return "CALL_DISCONNECTED";
-  if (wavDone && !wavError) return nullptr; // Recipient ends successful call.
+  if (wavDone && !wavError) return test ? endAttempt(nullptr) : nullptr;
   return endAttempt(cancelRequested?"CANCELLED":"PLAYBACK_FAILED");
 }
 

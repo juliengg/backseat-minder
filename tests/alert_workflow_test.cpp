@@ -7,6 +7,7 @@ using namespace alert;
 static Workflow make() {
     Workflow w; w.config.emergency_call_enabled=true;
     for(unsigned i=0;i<4;++i) std::snprintf(w.config.numbers[i],32,"+1555123456%u",i);
+    w.tick(0,false,true,true); // Qualify the driver before timeline tests.
     return w;
 }
 static unsigned drain(Workflow &w, Kind kind) {
@@ -15,6 +16,42 @@ static unsigned drain(Workflow &w, Kind kind) {
     return n;
 }
 int main() {
+    // Restored elapsed time uses a separate offset, never a negative boot timestamp.
+    auto original=make();original.tick(1000,true,false,true);
+    original.submitted(Kind::Text);
+    auto saved=original.checkpoint(176000,false);
+    auto resumed=make();assert(resumed.restore(saved,5));
+    assert(resumed.state==State::Active && resumed.elapsed(5)==175000);
+    Action resume_action;assert(!resumed.next(resume_action));
+    resumed.tick(5005,true,false,true);assert(resumed.stage==2);
+    assert(drain(resumed,Kind::Text)==4);
+    saved=resumed.checkpoint(125005,false); // 300 seconds total.
+    resumed=make();assert(resumed.restore(saved,0));resumed.tick(0,true,false,true);
+    assert(resumed.elapsed(0)==300000 && resumed.stage==3);
+    assert(resumed.next(resume_action) && resume_action.kind==Kind::Horn);
+    resumed.submitted(Kind::Horn);
+    resumed.submitted(Kind::Call); // Persist an attempted/uncertain call.
+    saved=resumed.checkpoint(0,false);
+    resumed=make();assert(resumed.restore(saved,0));assert(resumed.call_attempted);
+    assert(!resumed.forecast_valid);
+    auto invalid=saved;invalid.queued=10;assert(!resumed.restore(invalid,0));
+    invalid=saved;invalid.version=99;assert(!resumed.restore(invalid,0));
+    Workflow boot; Action pending;
+    assert(boot.state==State::Suppressed && !std::strcmp(boot.state_name(),"suppressed"));
+    boot.tick(0,true,false,true); assert(boot.state==State::Suppressed && !boot.next(pending));
+    boot.tick(600000,true,false,true); assert(boot.state==State::Suppressed);
+    boot.tick(600001,false,false,true); assert(boot.state==State::Suppressed); // Checking/failed scanner.
+    boot.tick(600002,false,true,false); assert(boot.state==State::NotArmed);
+    assert(!std::strcmp(boot.state_name(),"not_armed"));
+    boot.tick(600003,false,true,true); assert(boot.state==State::Armed);
+    assert(!std::strcmp(boot.state_name(),"armed"));
+    boot.tick(600004,true,false,true); assert(boot.state==State::Active);
+    assert(!std::strcmp(boot.state_name(),"active"));
+    boot=Workflow{}; boot.tick(0,false,true,true); assert(boot.state==State::Armed);
+    boot.tick(1,false,true,false); assert(boot.state==State::NotArmed);
+    boot.tick(2,true,false,false); assert(boot.state==State::NotArmed);
+    boot.tick(3,true,false,true); assert(boot.state==State::Active); // Driver already qualified this boot.
+    boot.cancel(); boot.tick(4,false,true,false); assert(boot.state==State::NotArmed);
     auto w=make(); Action a;
     w.tick(0,false,true,true); assert(w.state==State::Armed);
     w.tick(0,false,false,true); assert(w.state==State::Armed); // Unknown beacon isn't AWAY.
@@ -30,8 +67,8 @@ int main() {
     w.tick(301000,true,false,true); assert(w.next(a)&&a.kind==Kind::Horn);
     w.submitted(a.kind); assert(drain(w,Kind::Text)==4);
     w.tick(600000,true,false,false); assert(w.state==State::Active); // Sensor loss alone cannot cancel.
-    w.tick(600001,false,true,false); w.tick(605002,false,true,false); assert(w.state==State::Suppressed);
-    assert(!w.next(a)); w.tick(610003,false,true,false); w.tick(615004,false,true,false); assert(w.state==State::Armed);
+    w.tick(600001,false,true,false); w.tick(605002,false,true,false); assert(w.state==State::NotArmed);
+    assert(!w.next(a)); w.tick(610003,false,true,false); w.tick(615004,false,true,false); assert(w.state==State::NotArmed);
 
     w=make(); w.tick(1000,true,false,true); drain(w,Kind::Text);
     for(uint64_t t=0;t<=180000;t+=3000) w.sample(1000+t,90+2*float(t)/60000,true);
@@ -42,6 +79,9 @@ int main() {
     for(uint64_t t=183000;t<240000;t+=3000) {w.sample(1000+t,110,true);w.tick(1000+t,true,false,true);assert(!w.next(a));}
     w.cancel(); assert(w.state==State::Suppressed&&!w.next(a));
     w.tick(400000,true,false,true); assert(w.state==State::Suppressed);
+    w.tick(400001,false,false,true); assert(w.state==State::Suppressed); // Unknown isn't return.
+    w.tick(400002,false,true,true); assert(w.state==State::Armed); // STOP clears with a passenger present.
+    w.tick(400003,true,false,true); assert(w.state==State::Active); // Next departure escalates.
 
     w=make(); w.tick(0,true,false,true); drain(w,Kind::Text);
     for(uint64_t t=0;t<=180000;t+=3000) w.sample(t,83+float(t)/60000*2,true);

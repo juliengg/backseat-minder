@@ -9,14 +9,23 @@ alerts to operate.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Armed
+    [*] --> Suppressed
+    [*] --> Active: Resume a saved active incident
+    Suppressed --> NotArmed: Confirmed driver NEAR, no passenger
+    Suppressed --> Armed: Confirmed driver NEAR, passenger detected
+    NotArmed --> Armed: Passenger detected
+    Armed --> NotArmed: No passenger detected
     Armed --> Active: Confirmed driver AWAY and any presence detection
     Active --> Suppressed: Authorized STOP text
-    Active --> Suppressed: Driver NEAR and all presence sensors clear for 5 seconds
+    Active --> NotArmed: Driver NEAR and all presence sensors clear for 5 seconds
     Active --> Armed: Driver NEAR for 15 seconds and fresh forecast below 104 F
-    Suppressed --> Armed: Driver NEAR and sensors clear for 5 seconds
 ```
 
+An ordinary boot starts Suppressed until a nearby driver beacon is confirmed. A boot
+with no beacon stays Suppressed even if a passenger is detected. After driver
+confirmation, no passenger means Not armed; passenger detected means Armed.
+Confirmed driver absence plus passenger presence then starts Active, including
+when a passenger is first detected after the driver has already left.
 Unknown/checking/failed BLE status does not start an incident. Presence is the
 existing camera-face OR mmWave OR thermal heat-trace signal; sensor thresholds
 and pin assignments are retained. An incident remains active when detections
@@ -110,15 +119,26 @@ cancellation, clears the NVS incident latch, and rearms immediately. While the
 driver remains NEAR, passenger presence cannot start an incident. A subsequent
 confirmed departure with passenger presence starts a fresh sequence.
 
-Explicit STOP/setup cancellation stays latched in NVS and requires driver NEAR
-with passenger detection clear for five seconds to rearm. Sensors, cameras and
+Only explicit STOP cancellation stays latched in NVS. Confirmed driver NEAR
+clears suppression immediately: passenger present selects Armed, otherwise Not
+armed. Setup temporarily pauses alerts; exiting by confirmation, the setup button,
+or reset rechecks driver and occupancy with saved settings. A setup startup failure
+also rechecks readiness. Sensors, cameras and
 beacon scanning continue running through driver presence and cancellation. The
 primary no longer enters automatic deep sleep or beacon-only wake probes.
 Existing manual SMS test and short horn controls remain available.
 
-The incident latch also prevents a reset from generating a second EMS call:
-an interrupted incident restarts suppressed, not automatically resumed. Driver
-return/clear rearms it. A persistence failure disables the emergency call for that
+Active incidents are checkpointed in NVS every five seconds, at state/milestone
+changes, and before action dispatch. A reboot during Active restores Active
+without waiting for a beacon, together with saved elapsed time, milestone,
+pending texts and call-attempt status. The timer resumes from its last checkpoint:
+up to five seconds of recent progress can be lost, and powered-off time is not
+counted. Already submitted texts/calls are not replayed; an uncertain call attempt
+is never redialed. A post-five-minute incident reasserts the repeating horn using
+the secondary's idempotent start command. Forecast history is rebuilt from fresh
+measurements after boot. STOP and setup cancel the saved active incident. A later
+confirmed departure with passenger presence starts a fresh timeline.
+A persistence failure disables the emergency call for that
 incident and records ALERT_STORAGE_ERROR. The modem/secondary must be power-cycled
 together after an uncertain binary audio transfer. The modem/secondary remains separately powered.
 

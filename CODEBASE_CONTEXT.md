@@ -241,7 +241,7 @@ The panel marks telemetry stale after ten seconds without a valid cellular packe
 
 ### Setup mode
 
-Holding the external setup button on GPIO 38 enters a blocking setup session:
+A short press of the external setup button on GPIO 38 opens setup on release when the driver beacon is nearby. During monitoring, holding the button for three seconds reboots the device. The setup session runs as follows:
 
 1. The device starts an **open** Wi-Fi access point:
    - SSID: `Backseat Minder`
