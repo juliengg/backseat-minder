@@ -129,17 +129,25 @@ class BluetoothTransportTests(unittest.TestCase):
             loop.close()
 
     def test_cli_bluetooth_default_and_address(self):
-        for args, identifier in ((["--bluetooth"], ""), (["--bluetooth", "AA:BB"], "AA:BB")):
-            device = Mock()
-            with patch("sys.argv", ["viewer"] + args), patch("builtins.print"), \
-                    patch("usb_telemetry_viewer.BluetoothConnection", return_value=device) as ctor, \
-                    patch("usb_telemetry_viewer.serial.Serial") as serial, \
-                    patch("usb_telemetry_viewer.show_viewer", return_value=0) as show:
-                self.assertEqual(main(), 0)
-            ctor.assert_called_once_with(identifier)
-            serial.assert_not_called()
-            show.assert_called_once_with(device)
-            device.close.assert_called_once()
+        cases = (
+            (["--bluetooth"], None),
+            (["--bluetooth", "--bluetooth-address", "AA:BB"], "AA:BB"),
+        )
+        for args, address in cases:
+            with self.subTest(args=args):
+                device = Mock()
+                with (
+                    patch("sys.argv", ["viewer", *args]),
+                    patch("builtins.print"),
+                    patch("bluetooth_transport.BluetoothSerial", return_value=device) as bluetooth,
+                    patch("usb_telemetry_viewer.serial.Serial") as usb,
+                    patch("usb_telemetry_viewer.show_viewer", return_value=0) as show,
+                ):
+                    self.assertEqual(main(), 0)
+                bluetooth.assert_called_once_with(address, "Backseat Minder")
+                usb.assert_not_called()
+                show.assert_called_once_with(device)
+                device.close.assert_called_once()
 
     def test_missing_bleak_reports_install_command(self):
         with patch("ble_telemetry_connection.importlib.util.find_spec", return_value=None):
